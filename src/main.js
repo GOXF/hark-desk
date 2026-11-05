@@ -9,6 +9,37 @@ const uid = () => Math.random().toString(36).slice(2, 10);
 let state = { accounts: [], current: null, settings: { css: "" } };
 let activeConv = null;
 
+/* ---------- 线条图标（lucide 风格） ---------- */
+const ICONS = {
+  back: '<path d="M15 18l-6-6 6-6"/>',
+  fwd: '<path d="M9 18l6-6-6-6"/>',
+  panel: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  gear: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>',
+  chev: '<path d="M6 9l6 6 6-6"/>',
+  refresh: '<path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/>',
+  search: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/>',
+  edit: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 1 1 3 3L7 19l-4 1 1-4z"/>',
+  folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
+  folderopen: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v1"/><path d="M3 7v10a2 2 0 0 0 2 2h12.5a2 2 0 0 0 1.9-1.4L21.5 12H7.2a2 2 0 0 0-1.9 1.4L3 19"/>',
+  folderplus: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 10v6M9 13h6"/>',
+  bookmark: '<path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/>',
+  dots: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
+  x: '<path d="M18 6L6 18M6 6l12 12"/>',
+};
+const svg = (n) => `<svg viewBox="0 0 24 24">${ICONS[n] ?? ""}</svg>`;
+function paintIcons(root = document) {
+  root.querySelectorAll("[data-icon]").forEach((el) => {
+    if (!el.dataset.painted) {
+      el.insertAdjacentHTML("afterbegin", svg(el.dataset.icon));
+      el.dataset.painted = "1";
+    }
+  });
+}
+const SHOW_LIMIT = 5;
+const expanded = new Set();
+let filter = "";
+
 async function save() {
   await invoke("save_state", { state: JSON.stringify(state) });
 }
@@ -192,17 +223,21 @@ function render() {
   }
 
   const a = acct();
-  $("#account-name").textContent = a ? a.name : "未选择账号";
+  $("#account-name .txt").textContent = a ? a.name : "未选择账号";
   $("#pane-empty").style.display = a ? "none" : "grid";
   const tree = $("#tree");
   tree.innerHTML = "";
   if (!a) return;
+  const q = filter.trim().toLowerCase();
   for (const p of a.projects) {
+    const items = q ? p.items.filter((it) => it.title.toLowerCase().includes(q) || it.url.toLowerCase().includes(q)) : p.items;
+    if (q && !items.length) continue;
+    const open = q || !p.collapsed;
     const wrap = document.createElement("div");
-    if (p.collapsed) wrap.className = "collapsed";
+    wrap.className = "project" + (open ? "" : " collapsed");
     const head = document.createElement("div");
     head.className = "project-head";
-    head.innerHTML = `<span>${p.collapsed ? "📁" : "📂"}</span><span class="name"></span><span class="acts"><button title="编辑">⋯</button></span>`;
+    head.innerHTML = `${svg(open ? "folderopen" : "folder")}<span class="name"></span><span class="acts"><button title="编辑">${svg("dots")}</button></span>`;
     head.querySelector(".name").textContent = p.name;
     head.onclick = async (e) => {
       if (e.target.closest(".acts")) return projectMenu(p);
@@ -211,18 +246,20 @@ function render() {
       render();
     };
     wrap.append(head);
-    for (const it of p.items) {
+    const limit = q || expanded.has(p.id) ? Infinity : SHOW_LIMIT;
+    items.slice(0, limit).forEach((it) => {
       const c = document.createElement("button");
       c.className = "side-item conv" + (it.id === activeConv ? " active" : "");
       c.textContent = it.title;
       c.title = it.url;
       c.onclick = (e) => {
-        if (e.target.classList.contains("del")) return;
+        if (e.target.closest(".del")) return;
         openConv(it);
       };
       const del = document.createElement("span");
       del.className = "del";
-      del.textContent = "×";
+      del.title = "取消收藏";
+      del.innerHTML = svg("x");
       del.onclick = async () => {
         p.items = p.items.filter((x) => x.id !== it.id);
         await save();
@@ -230,24 +267,83 @@ function render() {
       };
       c.append(del);
       wrap.append(c);
+    });
+    if (items.length > limit) {
+      const more = document.createElement("button");
+      more.className = "side-item more";
+      more.textContent = "展开显示";
+      more.onclick = () => { expanded.add(p.id); render(); };
+      wrap.append(more);
+    } else if (!q && expanded.has(p.id) && items.length > SHOW_LIMIT) {
+      const less = document.createElement("button");
+      less.className = "side-item more";
+      less.textContent = "收起";
+      less.onclick = () => { expanded.delete(p.id); render(); };
+      wrap.append(less);
+    }
+    if (!items.length) {
+      const h = document.createElement("div");
+      h.className = "empty-hint";
+      h.textContent = "还没有收藏";
+      wrap.append(h);
     }
     tree.append(wrap);
   }
 }
 
+/* ---------- 标题栏：显示当前页面标题，后退/前进 ---------- */
+async function refreshHead() {
+  const a = acct();
+  if (!a) {
+    $("#conv-title").textContent = "Hark Desk";
+    return;
+  }
+  try {
+    const page = await invoke("current_page", { id: a.id });
+    const t = cleanTitle(page.title, page.url) || "Hark";
+    if ($("#conv-title").textContent !== t) $("#conv-title").textContent = t;
+  } catch {}
+}
+setInterval(refreshHead, 1500);
+
+function toggleSidebar() {
+  document.body.classList.toggle("side-hidden");
+  state.settings.sideHidden = document.body.classList.contains("side-hidden");
+  save();
+}
+
 /* ---------- 启动 ---------- */
+paintIcons();
 $("#add-account").onclick = addAccount;
+$("#empty-add").onclick = addAccount;
 $("#add-project").onclick = addProject;
 $("#pin-current").onclick = pinCurrent;
 $("#open-settings").onclick = settings;
+$("#account-name").onclick = (e) => acct() && accountMenu(acct(), e);
 $("#new-chat").onclick = () => state.current && invoke("navigate", { id: state.current, url: HOME });
 $("#reload").onclick = () => state.current && invoke("reload", { id: state.current });
+$("#go-back").onclick = () => state.current && invoke("history_go", { id: state.current, delta: -1 });
+$("#go-fwd").onclick = () => state.current && invoke("history_go", { id: state.current, delta: 1 });
+$("#toggle-side").onclick = toggleSidebar;
+$("#search-btn").onclick = () => {
+  const el = $("#search");
+  el.hidden = !el.hidden;
+  if (el.hidden) { el.value = ""; filter = ""; render(); } else el.focus();
+};
+$("#search").oninput = (e) => { filter = e.target.value; render(); };
+$("#search").onkeydown = (e) => { if (e.key === "Escape") $("#search-btn").click(); };
+window.addEventListener("keydown", (e) => {
+  if (e.ctrlKey && e.key.toLowerCase() === "b") { e.preventDefault(); toggleSidebar(); }
+  if (e.ctrlKey && e.key.toLowerCase() === "k") { e.preventDefault(); if ($("#search").hidden) $("#search-btn").click(); else $("#search").focus(); }
+});
 
 (async () => {
   const raw = await invoke("load_state");
   if (raw) state = { ...state, ...JSON.parse(raw) };
   state.settings ??= { css: "" };
+  if (state.settings.sideHidden) document.body.classList.add("side-hidden");
   render();
   await syncPane();
   if (state.current && acct()) await invoke("show_account", { id: state.current, url: null, css: state.settings.css });
+  refreshHead();
 })();

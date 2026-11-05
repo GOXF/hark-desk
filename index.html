@@ -7,36 +7,55 @@
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
+    <!-- 顶部工具条（Codex：后退 / 前进 / 侧栏开关） -->
+    <header id="topbar">
+      <button id="go-back" class="tb-btn" title="后退" data-icon="back"></button>
+      <button id="go-fwd" class="tb-btn" title="前进" data-icon="fwd"></button>
+      <button id="toggle-side" class="tb-btn" title="显示/隐藏侧栏 (Ctrl+B)" data-icon="panel"></button>
+    </header>
+
     <div id="app">
-      <!-- 最左：账号栏（头像） -->
+      <!-- 最左：细图标栏（账号头像 + 设置） -->
       <nav id="rail">
         <div id="accounts"></div>
-        <button id="add-account" class="rail-btn" title="添加账号">＋</button>
+        <button id="add-account" class="rail-btn" title="添加账号" data-icon="plus"></button>
         <div class="rail-spacer"></div>
-        <button id="open-settings" class="rail-btn" title="设置">⚙</button>
+        <button id="open-settings" class="rail-btn" title="设置" data-icon="gear"></button>
       </nav>
 
-      <!-- 中间：项目 / 对话树（Codex 风格） -->
+      <!-- 侧栏：项目 / 对话树 -->
       <aside id="sidebar">
         <header id="sidebar-head">
-          <div id="account-name">未选择账号</div>
+          <button id="account-name" title="账号设置"><span class="txt">未选择账号</span><i data-icon="chev"></i></button>
           <div class="head-actions">
-            <button id="reload" title="刷新页面">⟳</button>
+            <button id="reload" title="刷新页面" data-icon="refresh"></button>
+            <button id="search-btn" title="搜索收藏" data-icon="search"></button>
           </div>
         </header>
-        <button id="new-chat" class="side-item strong">✎ 新对话</button>
-        <button id="pin-current" class="side-item">📌 收藏当前对话</button>
+        <input id="search" placeholder="搜索收藏的对话" hidden />
+        <button id="new-chat" class="side-item"><i data-icon="edit"></i><span>新聊天</span></button>
         <div id="tree"></div>
-        <button id="add-project" class="side-item muted">＋ 新建项目</button>
+        <button id="add-project" class="side-item muted"><i data-icon="folderplus"></i><span>新建项目</span></button>
       </aside>
 
-      <!-- 右侧：Hark 页面（原生子 WebView 覆盖在这个区域上） -->
-      <main id="pane">
-        <div id="pane-empty">
-          <h2>Hark Desk</h2>
-          <p>点左边的 ＋ 添加账号，登录一次后会一直保持。</p>
-        </div>
-      </main>
+      <!-- 主区：白色卡片，上面是对话标题栏，下面是 Hark 页面（原生子 WebView 盖在 #pane 上） -->
+      <section id="main">
+        <header id="main-head">
+          <i data-icon="folder"></i>
+          <div id="conv-title">Hark</div>
+          <div class="head-actions">
+            <button id="pin-current" title="收藏当前对话" data-icon="bookmark"></button>
+          </div>
+        </header>
+        <main id="pane">
+          <div id="pane-empty">
+            <div class="logo">H</div>
+            <h2>开始使用 Hark Desk</h2>
+            <p>添加一个账号，登录一次后会一直保持。</p>
+            <button id="empty-add" class="primary">添加账号</button>
+          </div>
+        </main>
+      </section>
     </div>
 
     <dialog id="dlg">

@@ -218,6 +218,16 @@ fn reload(app: AppHandle, id: String) -> Result<(), String> {
     Ok(())
 }
 
+/// 顶栏的后退 / 前进：delta = -1 / 1
+#[tauri::command]
+fn history_go(app: AppHandle, id: String, delta: i32) -> Result<(), String> {
+    if let Some(v) = app.get_webview(&label(&id)) {
+        v.eval(&format!("history.go({})", delta.clamp(-1, 1)))
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 #[derive(Serialize)]
 struct Page {
     url: String,
@@ -303,6 +313,7 @@ fn main() {
             hide_all,
             navigate,
             reload,
+            history_go,
             current_page,
             remove_account,
             reset_webviews
