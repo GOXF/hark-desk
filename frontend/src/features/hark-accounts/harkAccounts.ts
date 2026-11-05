@@ -11,6 +11,29 @@ import {
   resolveHostBrowserPluginId,
 } from '@/features/host-browser/browserPrefsStore';
 import { requestBrowserTabOpen } from '@/features/host-browser/openBrowserTab';
+import { pluginControlApi } from '@/lib/api/plugins';
+
+const BROWSER_PLUGIN_ID = 'vibex.browser';
+
+/**
+ * Hark accounts live inside the built-in browser plugin. A fresh install has
+ * it neither installed nor enabled, so install (from the official package)
+ * and enable it on demand before any profile call.
+ */
+export async function ensureHostBrowserPlugin(): Promise<void> {
+  if (await resolveHostBrowserPluginId()) return;
+  const catalog = await pluginControlApi.catalog();
+  let plugin = catalog.plugins.find((p) => p.id === BROWSER_PLUGIN_ID);
+  if (!plugin) {
+    plugin = await pluginControlApi.marketplaceInstall('vibex', 'browser');
+  }
+  if (!plugin.enabled || plugin.quarantined) {
+    await pluginControlApi.setEnabled(plugin.id, true);
+  }
+  if (!(await resolveHostBrowserPluginId())) {
+    throw new Error('内置浏览器插件启用失败，请在「插件」页手动启用 Browser');
+  }
+}
 
 export const HARK_HOME_URL = 'https://hark.com/';
 export const HARK_PROFILE_PREFIX = 'hark-';
@@ -47,6 +70,7 @@ async function persistConfig(): Promise<void> {
 export async function addHarkAccount(
   name?: string
 ): Promise<BrowserProfileRecord> {
+  await ensureHostBrowserPlugin();
   await loadBrowserPrefs();
   const existing = harkAccountsFrom(getBrowserPrefsSnapshot().settings.profiles);
   const label = `${LABEL_PREFIX}${name?.trim() || `账号 ${existing.length + 1}`}`;
