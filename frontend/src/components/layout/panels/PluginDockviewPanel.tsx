@@ -20,6 +20,7 @@ export default function PluginDockviewPanel(props: IDockviewPanelProps) {
     contributionId?: string;
     requestedUrl?: string | null;
     nativeTabId?: string | null;
+    browserProfileId?: string | null;
   };
   const { workspaceId, sessionId } = useParams<{
     workspaceId?: string;
@@ -74,6 +75,11 @@ export default function PluginDockviewPanel(props: IDockviewPanelProps) {
         requestedUrl={params.requestedUrl}
         nativeTabId={
           typeof params.nativeTabId === 'string' ? params.nativeTabId : null
+        }
+        profileId={
+          typeof params.browserProfileId === 'string'
+            ? params.browserProfileId
+            : null
         }
         panelApi={props.api}
       />

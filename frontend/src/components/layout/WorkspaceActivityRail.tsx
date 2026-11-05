@@ -30,6 +30,7 @@ import {
 } from 'lucide-react';
 
 import { usePanelActionsContext } from '@/contexts/PanelActionsContext';
+import { HarkAccountsMenu } from '@/features/hark-accounts/HarkAccountsMenu';
 import { cn } from '@/lib/utils';
 import {
   type ActivityRailItemId,
@@ -276,6 +277,7 @@ export function WorkspaceActivityRail({
             document.body
           )
         : null}
+      <HarkAccountsMenu />
       {isLeftDockSplit() ? (
         <button
           type="button"

@@ -1,0 +1,81 @@
+name: Hark Desk Windows
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: hark-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: 22
+  PNPM_VERSION: 10.13.1
+  RUST_TOOLCHAIN: nightly-2025-12-04
+  SQLX_OFFLINE: "true"
+  SQLX_OFFLINE_DIR: ${{ github.workspace }}/crates/db/.sqlx
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Setup Node.js and pnpm
+        uses: ./.github/actions/setup-node
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+          cache-on-failure: true
+          shared-key: hark-windows-x64
+          cache-targets: false
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build installer
+        shell: bash
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
+        run: node scripts/run-tauri-build.js --target x86_64-pc-windows-msvc --bundles nsis
+
+      - name: Collect installer
+        shell: bash
+        run: |
+          mkdir -p out
+          find target/x86_64-pc-windows-msvc/release/bundle/nsis -name '*.exe' -exec cp {} out/ \;
+          cd out && for f in *.exe; do mv "$f" "Hark-Desk-VibeX_x64-setup.exe"; done
+          ls -la
+
+      - name: Upload artifact
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: hark-desk-windows-x64
+          path: out/*.exe
+          retention-days: 3
+
+      - name: Publish nightly
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view nightly >/dev/null 2>&1 || gh release create nightly --prerelease --title "Nightly" --notes "main 最新构建"
+          gh release upload nightly out/Hark-Desk-VibeX_x64-setup.exe --clobber
+          gh release edit nightly --notes "main 最新构建：${GITHUB_SHA::7}"

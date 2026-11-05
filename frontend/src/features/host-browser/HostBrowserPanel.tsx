@@ -45,6 +45,7 @@ import { nativeSurfaceDestinationProgress } from '@/lib/nativeSurfaceHandoff';
 import { overlayCoversSurface } from '@/lib/nativeSurfaceOverlay';
 import { BROWSER_HOST_EVENT } from './browserHostEvent';
 import { requestBrowserTabOpen } from './openBrowserTab';
+import { isHarkProfileId } from '@/features/hark-accounts/harkAccounts';
 import { backendCall, backendListen } from '@/lib/backendTransport';
 import { getInvokeErrorMessage } from '@/lib/errors';
 import { cn } from '@/lib/utils';
@@ -359,12 +360,15 @@ export function HostBrowserPanel({
   panelVisible,
   requestedUrl,
   nativeTabId,
+  profileId,
   panelApi,
 }: {
   pluginId: string;
   panelVisible: boolean;
   requestedUrl?: string | null;
   nativeTabId?: string | null;
+  /** Fixed browser profile for this panel (e.g. one Hark account). */
+  profileId?: string | null;
   panelApi?: {
     id?: string;
     updateParameters: (params: Record<string, unknown>) => void;
@@ -408,6 +412,8 @@ export function HostBrowserPanel({
     (payload: BrowserHostEvent['payload']) => void
   >(() => {});
   const addressFocusedRef = useRef(false);
+  const profileIdRef = useRef<string | null>(profileId ?? null);
+  profileIdRef.current = profileId ?? null;
   const dispatchRef = useRef<
     (operation: string, input?: Record<string, unknown>) => Promise<unknown>
   >(async () => undefined);
@@ -719,6 +725,7 @@ export function HostBrowserPanel({
       try {
         const bounds = await waitForSurfaceBounds();
         const currentSettings = browserSettingsRef.current;
+        const fixedProfile = profileIdRef.current;
         let initialGrant = currentSettings.defaultGrant;
         try {
           const origin = new URL(url).origin;
@@ -729,10 +736,13 @@ export function HostBrowserPanel({
         }
         const created = (await dispatch('tab.create', {
           url,
-          grant: initialGrant,
-          ...(currentSettings.newTabProfile !== 'default'
-            ? { profileId: currentSettings.newTabProfile }
-            : {}),
+          // Hark account tabs never expose the signed-in page to agents.
+          grant: fixedProfile && isHarkProfileId(fixedProfile) ? 'none' : initialGrant,
+          ...(fixedProfile
+            ? { profileId: fixedProfile }
+            : currentSettings.newTabProfile !== 'default'
+              ? { profileId: currentSettings.newTabProfile }
+              : {}),
           ...(bounds ? { bounds } : {}),
         })) as BrowserTab;
         tabIdRef.current = created.tabId;

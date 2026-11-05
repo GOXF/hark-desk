@@ -261,6 +261,7 @@ export interface PanelActions {
     instance?: 'new' | 'focus';
     requestedUrl?: string | null;
     nativeTabId?: string | null;
+    browserProfileId?: string | null;
   }) => void;
   setDockviewApi: (api: DockviewApi | null) => void;
 }
@@ -327,7 +328,12 @@ export function PanelActionsProvider({ children }: { children: ReactNode }) {
   const [dockviewEpoch, setDockviewEpoch] = useState(0);
   const offeredPluginPanelsRef = useRef(new Set<string>());
   const pendingBrowserOpensRef = useRef<
-    Array<{ url?: string | null; nativeTabId?: string | null }>
+    Array<{
+      url?: string | null;
+      nativeTabId?: string | null;
+      profileId?: string | null;
+      title?: string | null;
+    }>
   >([]);
   const openPluginPanelRef = useRef<
     | ((options: {
@@ -339,6 +345,7 @@ export function PanelActionsProvider({ children }: { children: ReactNode }) {
         instance?: 'new' | 'focus';
         requestedUrl?: string | null;
         nativeTabId?: string | null;
+        browserProfileId?: string | null;
       }) => void)
     | null
   >(null);
@@ -1668,6 +1675,7 @@ export function PanelActionsProvider({ children }: { children: ReactNode }) {
       instance?: 'new' | 'focus';
       requestedUrl?: string | null;
       nativeTabId?: string | null;
+      browserProfileId?: string | null;
     }) => {
       const dockviewApi = apiRef.current;
       if (!dockviewApi) return;
@@ -1696,6 +1704,7 @@ export function PanelActionsProvider({ children }: { children: ReactNode }) {
         icon: options.icon ?? null,
         requestedUrl: options.requestedUrl ?? null,
         nativeTabId: options.nativeTabId ?? null,
+        browserProfileId: options.browserProfileId ?? null,
       };
       const existing = dockviewApi.getPanel(panelId);
       if (existing) {
@@ -1788,6 +1797,8 @@ export function PanelActionsProvider({ children }: { children: ReactNode }) {
     const openFromEvent = (request: {
       url?: string | null;
       nativeTabId?: string | null;
+      profileId?: string | null;
+      title?: string | null;
     }) => {
       if (!apiRef.current || !openPluginPanelRef.current) {
         pendingBrowserOpensRef.current.push(request);
@@ -1809,7 +1820,7 @@ export function PanelActionsProvider({ children }: { children: ReactNode }) {
       if (!browser) return;
       const metadata = contributionMetadata(browser);
       openPluginPanelRef.current({
-        title: browser.label,
+        title: request.title || browser.label,
         pluginId: browser.pluginId,
         contributionId: browser.id,
         icon: typeof metadata.icon === 'string' ? metadata.icon : 'globe',
@@ -1817,6 +1828,7 @@ export function PanelActionsProvider({ children }: { children: ReactNode }) {
         instance: 'new',
         requestedUrl: request.url ?? null,
         nativeTabId: request.nativeTabId ?? null,
+        browserProfileId: request.profileId ?? null,
       });
     };
     setBrowserTabOpenHandler(openFromEvent);
@@ -1863,7 +1875,7 @@ export function PanelActionsProvider({ children }: { children: ReactNode }) {
     const metadata = contributionMetadata(browser);
     for (const request of queued) {
       open({
-        title: browser.label,
+        title: request.title || browser.label,
         pluginId: browser.pluginId,
         contributionId: browser.id,
         icon: typeof metadata.icon === 'string' ? metadata.icon : 'globe',
@@ -1871,6 +1883,7 @@ export function PanelActionsProvider({ children }: { children: ReactNode }) {
         instance: 'new',
         requestedUrl: request.url ?? null,
         nativeTabId: request.nativeTabId ?? null,
+        browserProfileId: request.profileId ?? null,
       });
     }
   }, [dockviewEpoch, pluginPanels]);

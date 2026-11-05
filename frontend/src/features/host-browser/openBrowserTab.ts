@@ -6,6 +6,10 @@ export type BrowserTabOpenRequest = {
   nativeTabId?: string | null;
   tabId?: string | null;
   sourceTabId?: string | null;
+  /** Browser profile (isolated cookie/storage dir) to open the tab in. */
+  profileId?: string | null;
+  /** Panel title to use instead of the browser contribution label. */
+  title?: string | null;
 };
 
 type BrowserTabOpenHandler = (request: BrowserTabOpenRequest) => void;
@@ -17,7 +21,7 @@ let handler: BrowserTabOpenHandler | null = null;
 function requestKey(request: BrowserTabOpenRequest): string {
   // Same click can emit a JS `tab.open` (no native id) and an adopted
   // engine view (`nativeTabId`). Collapse those to one panel.
-  return `${request.url ?? ''}|${request.sourceTabId ?? ''}`;
+  return `${request.url ?? ''}|${request.sourceTabId ?? ''}|${request.profileId ?? ''}`;
 }
 
 function isDuplicate(
