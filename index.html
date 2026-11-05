@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Hark Desk</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <!-- 最左：账号栏（头像） -->
+      <nav id="rail">
+        <div id="accounts"></div>
+        <button id="add-account" class="rail-btn" title="添加账号">＋</button>
+        <div class="rail-spacer"></div>
+        <button id="open-settings" class="rail-btn" title="设置">⚙</button>
+      </nav>
+
+      <!-- 中间：项目 / 对话树（Codex 风格） -->
+      <aside id="sidebar">
+        <header id="sidebar-head">
+          <div id="account-name">未选择账号</div>
+          <div class="head-actions">
+            <button id="reload" title="刷新页面">⟳</button>
+          </div>
+        </header>
+        <button id="new-chat" class="side-item strong">✎ 新对话</button>
+        <button id="pin-current" class="side-item">📌 收藏当前对话</button>
+        <div id="tree"></div>
+        <button id="add-project" class="side-item muted">＋ 新建项目</button>
+      </aside>
+
+      <!-- 右侧：Hark 页面（原生子 WebView 覆盖在这个区域上） -->
+      <main id="pane">
+        <div id="pane-empty">
+          <h2>Hark Desk</h2>
+          <p>点左边的 ＋ 添加账号，登录一次后会一直保持。</p>
+        </div>
+      </main>
+    </div>
+
+    <dialog id="dlg">
+      <form method="dialog" id="dlg-form">
+        <h3 id="dlg-title"></h3>
+        <div id="dlg-body"></div>
+        <menu>
+          <button value="cancel" formnovalidate>取消</button>
+          <button value="ok" id="dlg-ok">确定</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

@@ -1,0 +1,83 @@
+:root {
+  --bg: #f7f7f8;
+  --side: #fbfbfc;
+  --line: #e7e7ea;
+  --text: #1f1f22;
+  --muted: #8a8a93;
+  --hover: #ececf0;
+  --active: #e3e3e9;
+  --accent: #2f6bff;
+  font-family: "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+  font-size: 14px;
+  color: var(--text);
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; }
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+
+#app { display: flex; height: 100vh; }
+
+/* 账号栏 */
+#rail {
+  width: 56px; flex: none; display: flex; flex-direction: column; align-items: center;
+  padding: 10px 0; gap: 8px; border-right: 1px solid var(--line); background: var(--bg);
+}
+#accounts { display: flex; flex-direction: column; gap: 8px; align-items: center; }
+.avatar {
+  width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center;
+  color: #fff; font-weight: 600; position: relative; transition: border-radius .15s;
+}
+.avatar:hover { border-radius: 14px; }
+.avatar.active::before {
+  content: ""; position: absolute; left: -10px; top: 8px; bottom: 8px; width: 4px;
+  border-radius: 0 4px 4px 0; background: var(--text);
+}
+.rail-btn {
+  width: 36px; height: 36px; border-radius: 10px; color: var(--muted); font-size: 18px;
+}
+.rail-btn:hover { background: var(--hover); color: var(--text); }
+.rail-spacer { flex: 1; }
+
+/* 项目树 */
+#sidebar {
+  width: 260px; flex: none; display: flex; flex-direction: column; background: var(--side);
+  border-right: 1px solid var(--line); padding: 8px; overflow: hidden;
+}
+#sidebar-head { display: flex; align-items: center; justify-content: space-between; padding: 6px 8px 10px; }
+#account-name { font-size: 17px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.head-actions button { width: 28px; height: 28px; border-radius: 6px; color: var(--muted); }
+.head-actions button:hover { background: var(--hover); color: var(--text); }
+.side-item {
+  display: block; width: 100%; text-align: left; padding: 7px 10px; border-radius: 8px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.side-item:hover { background: var(--hover); }
+.side-item.strong { font-weight: 500; }
+.side-item.muted { color: var(--muted); }
+#tree { flex: 1; overflow-y: auto; margin: 8px 0; border-top: 1px solid var(--line); padding-top: 8px; }
+.project-head { display: flex; align-items: center; gap: 6px; padding: 7px 10px; border-radius: 8px; color: #555; cursor: pointer; user-select: none; }
+.project-head:hover { background: var(--hover); }
+.project-head .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-head .acts { display: none; gap: 2px; }
+.project-head:hover .acts { display: flex; }
+.project-head .acts button { color: var(--muted); padding: 0 4px; }
+.conv { padding-left: 30px; position: relative; }
+.conv.active { background: var(--active); }
+.conv .del { position: absolute; right: 6px; top: 6px; display: none; color: var(--muted); }
+.conv:hover .del { display: block; }
+.collapsed .conv { display: none; }
+
+/* 右侧 */
+#pane { flex: 1; position: relative; background: #fff; }
+#pane-empty { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; color: var(--muted); }
+#pane-empty h2 { color: var(--text); margin: 0 0 8px; }
+
+/* 对话框 */
+dialog { border: 1px solid var(--line); border-radius: 12px; padding: 18px; width: 380px; box-shadow: 0 10px 40px rgba(0,0,0,.15); }
+dialog h3 { margin: 0 0 12px; font-size: 16px; }
+dialog label { display: block; margin: 10px 0 4px; color: #555; }
+dialog input, dialog textarea, dialog select { width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 8px; font: inherit; }
+dialog textarea { height: 90px; font-family: Consolas, monospace; font-size: 12px; }
+dialog menu { display: flex; justify-content: flex-end; gap: 8px; padding: 0; margin: 16px 0 0; }
+dialog menu button { padding: 6px 14px; border-radius: 8px; border: 1px solid var(--line); }
+dialog menu #dlg-ok { background: var(--text); color: #fff; border-color: var(--text); }
