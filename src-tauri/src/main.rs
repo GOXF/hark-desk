@@ -6,11 +6,11 @@
 //!   - "acct-<id>"：每个账号一个 Hark 官方页面，独立数据目录（登录各自保持），
 //!     盖在界面右侧对话区上。云浏览器、卡片、上传等功能都是 Hark 页面本身的，原样可用。
 
-use std::{fs, path::PathBuf, sync::Mutex};
+use std::{collections::HashMap, fs, path::PathBuf, sync::Mutex};
 
 use serde::Serialize;
 use tauri::{
-    webview::WebviewBuilder, window::WindowBuilder, AppHandle, LogicalPosition, LogicalSize,
+    webview::{NewWindowResponse, WebviewBuilder}, window::WindowBuilder, AppHandle, LogicalPosition, LogicalSize,
     Manager, State, Webview, WebviewUrl, Window,
 };
 
@@ -28,6 +28,8 @@ struct Pane {
 struct AppState {
     pane: Mutex<Pane>,
     current: Mutex<Option<String>>,
+    /// 每个账号页面最新的 document.title（来自 on_document_title_changed）
+    titles: Mutex<HashMap<String, String>>,
 }
 
 fn label(id: &str) -> String {
@@ -55,6 +57,33 @@ fn place(view: &Webview, p: Pane) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     view.set_size(LogicalSize::new(p.w.max(1.0), p.h.max(1.0)))
         .map_err(|e| e.to_string())
+}
+
+/// Hark 页面里弹新窗口时：登录类弹窗留在应用里（共享同一个数据目录，登录才能写回），
+/// 其余 target=_blank / window.open 一律交给系统默认浏览器。
+fn keep_popup_inside(url: &tauri::Url) -> bool {
+    if url.scheme() == "about" {
+        return true; // 很多 OAuth 弹窗先开 about:blank 再跳转
+    }
+    let host = url.host_str().unwrap_or("");
+    const AUTH_HOSTS: [&str; 5] = [
+        "accounts.google.com",
+        "appleid.apple.com",
+        "login.microsoftonline.com",
+        "login.live.com",
+        "github.com",
+    ];
+    let is_hark = host == "hark.com" || host.ends_with(".hark.com");
+    let is_auth = AUTH_HOSTS.contains(&host)
+        && (host != "github.com" || url.path().starts_with("/login"));
+    is_hark && (url.path().contains("auth") || url.path().contains("login") || url.path().contains("sso"))
+        || is_auth
+}
+
+fn open_external(url: &tauri::Url) {
+    if matches!(url.scheme(), "http" | "https" | "mailto") {
+        let _ = tauri_plugin_opener::open_url(url.as_str(), None::<&str>);
+    }
 }
 
 fn css_script(css: &str) -> String {
@@ -143,7 +172,20 @@ async fn show_account(
         WebviewUrl::External(start.parse().map_err(|e| format!("地址不对：{e}"))?),
     )
     .data_directory(dir)
-    .initialization_script(&css_script(css.as_deref().unwrap_or("")));
+    .initialization_script(&css_script(css.as_deref().unwrap_or("")))
+    .on_document_title_changed(|wv, title| {
+        if let Some(st) = wv.app_handle().try_state::<AppState>() {
+            st.titles.lock().unwrap().insert(wv.label().to_string(), title);
+        }
+    })
+    .on_new_window(|url, _features| {
+        if keep_popup_inside(&url) {
+            NewWindowResponse::Allow
+        } else {
+            open_external(&url);
+            NewWindowResponse::Deny
+        }
+    });
 
     window(&app)?
         .add_child(
@@ -183,12 +225,14 @@ struct Page {
 }
 
 #[tauri::command]
-fn current_page(app: AppHandle, id: String) -> Result<Page, String> {
+fn current_page(app: AppHandle, st: State<'_, AppState>, id: String) -> Result<Page, String> {
+    let me = label(&id);
     let v = app
-        .get_webview(&label(&id))
+        .get_webview(&me)
         .ok_or_else(|| "这个账号的页面还没打开".to_string())?;
     let url = v.url().map_err(|e| e.to_string())?.to_string();
-    Ok(Page { url, title: String::new() })
+    let title = st.titles.lock().unwrap().get(&me).cloned().unwrap_or_default();
+    Ok(Page { url, title })
 }
 
 /// 删除账号：关掉页面并清掉它的登录数据。
@@ -197,6 +241,7 @@ async fn remove_account(app: AppHandle, st: State<'_, AppState>, id: String) -> 
     if let Some(v) = app.get_webview(&label(&id)) {
         let _ = v.close();
     }
+    st.titles.lock().unwrap().remove(&label(&id));
     {
         let mut cur = st.current.lock().unwrap();
         if cur.as_deref() == Some(id.as_str()) {

@@ -110,7 +110,7 @@ async function pinCurrent() {
   if (!a) return;
   const page = await invoke("current_page", { id: a.id });
   const r = await dialog("收藏当前对话", [
-    { name: "title", label: "标题", value: page.title || "" },
+    { name: "title", label: "标题", value: cleanTitle(page.title, page.url) },
     { name: "project", label: `放进哪个项目（${a.projects.map((p) => p.name).join(" / ")}）`, value: a.projects[0]?.name ?? "默认" },
     { name: "url", label: "地址", value: page.url },
   ]);
@@ -125,6 +125,18 @@ async function pinCurrent() {
   activeConv = item.id;
   await save();
   render();
+}
+
+// 页面标题去掉 " | Hark" / " - Hark" 之类的站名后缀；拿不到就用地址最后一段
+function cleanTitle(title, url) {
+  let t = (title || "").trim().replace(/\s*[|\-–—·]\s*Hark\s*$/i, "").trim();
+  if (!t || /^hark$/i.test(t)) {
+    try {
+      const seg = new URL(url).pathname.split("/").filter(Boolean).pop();
+      t = seg ? `对话 ${decodeURIComponent(seg).slice(0, 8)}` : "";
+    } catch {}
+  }
+  return t;
 }
 
 async function openConv(item) {
