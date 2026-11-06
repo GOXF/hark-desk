@@ -21,6 +21,7 @@ mod host_windows;
 mod logging;
 mod managed_artifacts;
 mod plugin_dev_server;
+mod proxy_forwarder;
 mod window_chrome;
 pub mod windows_webview2;
 

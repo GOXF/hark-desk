@@ -543,6 +543,7 @@ domain_commands! {
     GetLogsDir => "get_logs_dir" / "application.call",
     GetSystemProxySettings => "get_system_proxy_settings" / "application.call",
     UpdateSystemProxySettings => "update_system_proxy_settings" / "application.call",
+    TestSystemProxy => "test_system_proxy" / "application.call",
     GetSystemRenderingSettings => "get_system_rendering_settings" / "application.call",
     UpdateSystemRenderingSettings => "update_system_rendering_settings" / "application.call",
     GetSystemDataDirSettings => "get_system_data_dir_settings" / "application.call",

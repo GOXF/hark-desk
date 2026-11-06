@@ -35,6 +35,8 @@ tracing-appender = { workspace = true }
 notify = "8.2.0"
 rustls = { workspace = true }
 base64 = "0.22"
+# Local no-auth forwarder for the embedded browser: WebView2 cannot do SOCKS5 auth.
+tokio-socks = "0.5"
 futures = { workspace = true }
 ignore = "0.4"
 regex = { workspace = true }

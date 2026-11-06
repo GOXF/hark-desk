@@ -372,6 +372,168 @@ pub(super) async fn update_proxy(args: Value) -> Result<Value, ApplicationError>
     serialize(enrich_proxy(persisted))
 }
 
+const PROXY_TEST_URL: &str = "https://hark.com/";
+const PROXY_TEST_TIMEOUT: Duration = Duration::from_secs(10);
+
+#[derive(Debug, Default, Deserialize)]
+struct ProxyTestArgs {
+    #[serde(default, alias = "proxyUrl")]
+    proxy_url: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ProxyTestResult {
+    ok: bool,
+    status: Option<u16>,
+    elapsed_ms: u64,
+    error: Option<String>,
+    /// Proxy that was used, with credentials removed. `None` = direct.
+    proxy: Option<String>,
+    url: &'static str,
+}
+
+/// `user:pass@` removed from a proxy URL for display.
+fn redact_proxy_url(raw: &str) -> String {
+    match reqwest::Url::parse(raw) {
+        Ok(mut url) if !url.username().is_empty() || url.password().is_some() => {
+            let _ = url.set_username("***");
+            let _ = url.set_password(None);
+            url.to_string().trim_end_matches('/').to_string()
+        }
+        Ok(_) => raw.trim_end_matches('/').to_string(),
+        Err(_) => "<invalid>".to_string(),
+    }
+}
+
+/// Remove any credential fragment of `proxy_url` that may have leaked into an
+/// error message.
+fn scrub_secret(message: String, proxy_url: &str) -> String {
+    let Ok(url) = reqwest::Url::parse(proxy_url) else {
+        return message;
+    };
+    let mut message = message.replace(proxy_url, &redact_proxy_url(proxy_url));
+    for secret in [url.password().unwrap_or(""), url.username()] {
+        if secret.len() >= 3 {
+            message = message.replace(secret, "***");
+        }
+    }
+    message
+}
+
+fn describe_reqwest_error(error: &reqwest::Error) -> String {
+    let mut parts = vec![error.to_string()];
+    let mut source = std::error::Error::source(error);
+    while let Some(inner) = source {
+        let text = inner.to_string();
+        if !parts.iter().any(|part| part.contains(&text)) {
+            parts.push(text);
+        }
+        source = inner.source();
+    }
+    let mut message = parts.join(": ");
+    if error.is_timeout() {
+        message = format!(
+            "timed out after {}s ({message})",
+            PROXY_TEST_TIMEOUT.as_secs()
+        );
+    }
+    message
+}
+
+/// Request `https://hark.com/` through the proxy in the settings draft (not
+/// necessarily saved yet). `socks5://` is upgraded to `socks5h://` so the
+/// hostname is resolved by the proxy, like the browser forwarder does.
+pub(super) async fn test_proxy(args: Value) -> Result<Value, ApplicationError> {
+    let args: ProxyTestArgs = unwrap_named(args, &["settings"]).unwrap_or_default();
+    let raw = args
+        .proxy_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+        .map(ToOwned::to_owned);
+    let effective = raw.as_deref().map(|url| {
+        let lower = url.to_ascii_lowercase();
+        if lower.starts_with("socks5://") {
+            format!("socks5h://{}", &url["socks5://".len()..])
+        } else if lower.starts_with("socks://") {
+            format!("socks5h://{}", &url["socks://".len()..])
+        } else if url.contains("://") {
+            url.to_string()
+        } else {
+            format!("http://{url}")
+        }
+    });
+    let shown = effective.as_deref().map(redact_proxy_url);
+    let started = std::time::Instant::now();
+    let finish = |ok: bool, status: Option<u16>, error: Option<String>| ProxyTestResult {
+        ok,
+        status,
+        elapsed_ms: started.elapsed().as_millis() as u64,
+        error: error.map(|message| match effective.as_deref() {
+            Some(url) => scrub_secret(message, url),
+            None => message,
+        }),
+        proxy: shown.clone(),
+        url: PROXY_TEST_URL,
+    };
+
+    let mut builder = reqwest::Client::builder()
+        .timeout(PROXY_TEST_TIMEOUT)
+        .connect_timeout(PROXY_TEST_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::limited(5));
+    builder = match effective.as_deref() {
+        Some(url) => match reqwest::Proxy::all(url) {
+            Ok(proxy) => builder.proxy(proxy),
+            Err(error) => {
+                return serialize(finish(
+                    false,
+                    None,
+                    Some(format!(
+                        "Invalid proxy URL: {}",
+                        describe_reqwest_error(&error)
+                    )),
+                ));
+            }
+        },
+        None => builder.no_proxy(),
+    };
+    let client = match builder.build() {
+        Ok(client) => client,
+        Err(error) => {
+            return serialize(finish(false, None, Some(describe_reqwest_error(&error))));
+        }
+    };
+    let result = match client
+        .get(PROXY_TEST_URL)
+        .header(reqwest::header::USER_AGENT, "VibeX proxy check")
+        .send()
+        .await
+    {
+        Ok(response) => {
+            let status = response.status();
+            if status.as_u16() == 407 {
+                finish(
+                    false,
+                    Some(407),
+                    Some("Proxy authentication failed (HTTP 407)".to_string()),
+                )
+            } else {
+                // Any HTTP answer from hark.com proves the route works.
+                finish(true, Some(status.as_u16()), None)
+            }
+        }
+        Err(error) => finish(false, None, Some(describe_reqwest_error(&error))),
+    };
+    tracing::info!(
+        proxy = shown.as_deref().unwrap_or("direct"),
+        ok = result.ok,
+        status = ?result.status,
+        elapsed_ms = result.elapsed_ms,
+        "system proxy connectivity test"
+    );
+    serialize(result)
+}
+
 pub(super) async fn get_rendering() -> Result<Value, ApplicationError> {
     serialize(load_system_store().await?.rendering)
 }
