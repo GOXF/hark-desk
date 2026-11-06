@@ -118,4 +118,28 @@ describe('resolveAppUpdate', () => {
     expect(snapshot.checked).toBe(false);
     expect(snapshot.error).toContain('403');
   });
+  it('treats a clean signed-feed check as checked when the GitHub fallback is off', async () => {
+    const snapshot = await resolveAppUpdate({
+      getCurrentVersion: async () => '0.4.120',
+      checkSignedFeed: async () => null,
+      checkGitHubRelease: async () => ({
+        current_version: '',
+        latest_version: null,
+        update_available: false,
+        release_url: null,
+        repository: null,
+        checked: false,
+        error: null,
+        body: null,
+        published_at: null,
+        checked_at: 'Thu 2026-11-05 6:00 PM PST (UTC-08:00)',
+      }),
+      now: () => 1_700_000_000_000,
+    });
+
+    expect(snapshot.update).toBeNull();
+    expect(snapshot.checked).toBe(true);
+    expect(snapshot.error).toBeNull();
+    expect(snapshot.currentVersion).toBe('0.4.120');
+  });
 });

@@ -1,5 +1,11 @@
-/// The current application version from Cargo.toml
-pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+/// The current application version. CI builds may override it with the
+/// compile-time `VIBEX_APP_VERSION` env var (kept in sync with the Tauri
+/// bundle version so the in-app updater compares like with like); otherwise
+/// it falls back to the version in Cargo.toml.
+pub const APP_VERSION: &str = match option_env!("VIBEX_APP_VERSION") {
+    Some(version) => version,
+    None => env!("CARGO_PKG_VERSION"),
+};
 
 pub fn normalize(version: &str) -> &str {
     version.trim().trim_start_matches('v')

@@ -49,26 +49,100 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Set build version
+        shell: bash
+        run: |
+          # Tauri updater only installs strictly higher versions, so every CI
+          # build gets a monotonically increasing patch: <major>.<minor>.<run_number+100>.
+          BASE=$(node -p "require('./package.json').version")
+          VERSION="${BASE%.*}.$((GITHUB_RUN_NUMBER + 100))"
+          node -e '
+            const fs = require("fs");
+            const v = process.argv[1];
+            for (const f of ["package.json", "frontend/package.json"]) {
+              const j = JSON.parse(fs.readFileSync(f, "utf8"));
+              j.version = v;
+              fs.writeFileSync(f, JSON.stringify(j, null, 2) + "\n");
+            }
+          ' "$VERSION"
+          echo "APP_VERSION=$VERSION" >> "$GITHUB_ENV"
+          # Compile-time override read by crates/utils (utils::version::APP_VERSION).
+          echo "VIBEX_APP_VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "Build version: $VERSION"
+
+      - name: Check updater signing key
+        shell: bash
+        env:
+          HAS_SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+        run: |
+          if [ "$HAS_SIGNING_KEY" = "true" ]; then
+            echo "UPDATER_SIGNED=true" >> "$GITHUB_ENV"
+            echo "TAURI_EXTRA_ARGS=" >> "$GITHUB_ENV"
+          else
+            echo "::warning::TAURI_SIGNING_PRIVATE_KEY secret is not set; building without updater artifacts (no latest.json, in-app update unavailable)."
+            CONF=$(node -e '
+              const fs = require("fs"), path = require("path");
+              const p = path.resolve("src-tauri", "tauri.nosign.conf.json");
+              fs.writeFileSync(p, JSON.stringify({ bundle: { createUpdaterArtifacts: false } }));
+              console.log(p.split(path.sep).join("/"));
+            ')
+            echo "UPDATER_SIGNED=false" >> "$GITHUB_ENV"
+            echo "TAURI_EXTRA_ARGS=--config $CONF" >> "$GITHUB_ENV"
+          fi
+
       - name: Build installer
         shell: bash
         env:
           NODE_OPTIONS: --max-old-space-size=6144
-        run: node scripts/run-tauri-build.js --target x86_64-pc-windows-msvc --bundles nsis
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: node scripts/run-tauri-build.js --target x86_64-pc-windows-msvc --bundles nsis $TAURI_EXTRA_ARGS
 
       - name: Collect installer
         shell: bash
         run: |
+          set -euo pipefail
           mkdir -p out
-          find target/x86_64-pc-windows-msvc/release/bundle/nsis -name '*.exe' -exec cp {} out/ \;
-          cd out && for f in *.exe; do mv "$f" "Hark-Desk-VibeX_x64-setup.exe"; done
-          ls -la
+          BUNDLE_DIR=target/x86_64-pc-windows-msvc/release/bundle/nsis
+          mapfile -t EXES < <(find "$BUNDLE_DIR" -maxdepth 1 -name '*.exe')
+          if [ "${#EXES[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one NSIS installer, found ${#EXES[@]}: ${EXES[*]:-}"
+            exit 1
+          fi
+          cp "${EXES[0]}" out/Hark-Desk-VibeX_x64-setup.exe
+          if [ "$UPDATER_SIGNED" = "true" ]; then
+            if [ ! -f "${EXES[0]}.sig" ]; then
+              echo "::error::Updater signature ${EXES[0]}.sig was not produced"
+              exit 1
+            fi
+            cp "${EXES[0]}.sig" out/Hark-Desk-VibeX_x64-setup.exe.sig
+            node -e '
+              const fs = require("fs");
+              const [version, sha, repo] = process.argv.slice(1);
+              const url = `https://github.com/${repo}/releases/download/nightly/Hark-Desk-VibeX_x64-setup.exe`;
+              const signature = fs.readFileSync("out/Hark-Desk-VibeX_x64-setup.exe.sig", "utf8").trim();
+              const platform = { signature, url };
+              const manifest = {
+                version,
+                notes: `main 最新构建：${sha.slice(0, 7)}`,
+                pub_date: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
+                platforms: {
+                  "windows-x86_64": platform,
+                  "windows-x86_64-nsis": platform,
+                },
+              };
+              fs.writeFileSync("out/latest.json", JSON.stringify(manifest, null, 2) + "\n");
+            ' "$APP_VERSION" "$GITHUB_SHA" "$GITHUB_REPOSITORY"
+            cat out/latest.json
+          fi
+          ls -la out
 
       - name: Upload artifact
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: hark-desk-windows-x64
-          path: out/*.exe
+          path: out/*
           retention-days: 3
 
       - name: Publish nightly
@@ -76,6 +150,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
           gh release view nightly >/dev/null 2>&1 || gh release create nightly --prerelease --title "Nightly" --notes "main 最新构建"
           gh release upload nightly out/Hark-Desk-VibeX_x64-setup.exe --clobber
-          gh release edit nightly --notes "main 最新构建：${GITHUB_SHA::7}"
+          if [ "$UPDATER_SIGNED" = "true" ]; then
+            gh release upload nightly out/Hark-Desk-VibeX_x64-setup.exe.sig --clobber
+            # Manifest last, so clients never see a version whose installer is not uploaded yet.
+            gh release upload nightly out/latest.json --clobber
+          fi
+          gh release edit nightly --notes "main 最新构建：v${APP_VERSION}（${GITHUB_SHA::7}）"

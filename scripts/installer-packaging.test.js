@@ -68,8 +68,8 @@ test("Windows Tauri config wires the custom installer template", () => {
   );
   assert.equal(
     baseConf.plugins?.updater?.windows?.installMode,
-    "basicUi",
-    "Windows updater must use basicUi so custom installer pages are shown on update restart",
+    "passive",
+    "Windows updater uses passive so in-app updates overwrite silently with only a progress bar",
   );
 });
 

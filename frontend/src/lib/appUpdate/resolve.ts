@@ -69,7 +69,10 @@ export async function resolveAppUpdate(
 
   const signed = signedResult.update;
   const update = mergeUpdate(signed, github);
-  const checked = Boolean(signed) || github.checked;
+  // A signed-feed check that completed without error is a successful check
+  // even when it found no newer version.
+  const checked =
+    Boolean(signed) || signedResult.error === null || github.checked;
   const error = checked
     ? null
     : github.error || signedResult.error || 'Update check failed';
