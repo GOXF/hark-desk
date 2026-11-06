@@ -93,6 +93,7 @@ pub(crate) fn handles(command: DomainCommand) -> bool {
             | DomainCommand::GetLogsDir
             | DomainCommand::GetSystemProxySettings
             | DomainCommand::UpdateSystemProxySettings
+            | DomainCommand::TestSystemProxy
             | DomainCommand::GetSystemRenderingSettings
             | DomainCommand::UpdateSystemRenderingSettings
             | DomainCommand::GetSystemDataDirSettings
@@ -211,6 +212,7 @@ pub(crate) async fn dispatch(
         DomainCommand::GetLogsDir => system::get_logs_dir(),
         DomainCommand::GetSystemProxySettings => system::get_proxy().await,
         DomainCommand::UpdateSystemProxySettings => system::update_proxy(args).await,
+        DomainCommand::TestSystemProxy => system::test_proxy(args).await,
         DomainCommand::GetSystemRenderingSettings => system::get_rendering().await,
         DomainCommand::UpdateSystemRenderingSettings => system::update_rendering(args).await,
         DomainCommand::GetSystemDataDirSettings => system::get_data_dir_settings(),

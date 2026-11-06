@@ -456,23 +456,32 @@ fn open_system_browser(url: &str) {
 /// Proxy inherited from the process environment (VibeX system-proxy settings
 /// write these before the browser starts). Returns `http://host:port` or
 /// `socks5://host:port`.
+///
+/// WebView2/Chromium cannot authenticate to a SOCKS5 proxy (and only prompts
+/// interactively for HTTP proxy credentials), so a proxy URL that carries
+/// `user:pass@` is routed through the local forwarder in
+/// [`crate::proxy_forwarder`], which listens on `127.0.0.1` without auth and
+/// dials the real upstream with the credentials. Proxies without credentials
+/// keep going to the webview directly.
 fn inherited_proxy_url() -> Option<String> {
-    for key in [
-        "HTTPS_PROXY",
-        "https_proxy",
-        "HTTP_PROXY",
-        "http_proxy",
-        "ALL_PROXY",
-        "all_proxy",
-    ] {
-        let Ok(value) = std::env::var(key) else {
-            continue;
-        };
-        if let Some(url) = canonical_proxy_url(value.trim()) {
-            return Some(url);
+    let raw = crate::proxy_forwarder::env_proxy_raw()?;
+    if let Some(endpoint) = crate::proxy_forwarder::parse_proxy_url(&raw)
+        && endpoint.has_credentials()
+    {
+        let redacted = endpoint.redacted();
+        crate::proxy_forwarder::set_upstream(crate::proxy_forwarder::Upstream::Proxy(endpoint));
+        match crate::proxy_forwarder::ensure_started() {
+            Ok(addr) => return Some(format!("http://{addr}")),
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    upstream = %redacted,
+                    "failed to start local proxy forwarder; browser falls back to the proxy without credentials"
+                );
+            }
         }
     }
-    None
+    canonical_proxy_url(&raw)
 }
 
 fn canonical_proxy_url(raw: &str) -> Option<String> {
@@ -2446,7 +2455,8 @@ impl NativeTabs for TauriNativeTabs {
             {
                 return browser_host::BrowserProxyCapability {
                     supported: true,
-                    active: Some(value.trim().to_owned()),
+                    // Never expose `user:pass@` to the UI or logs.
+                    active: Some(crate::proxy_forwarder::redact_proxy_url(value.trim())),
                     source: "environment".to_owned(),
                 };
             }

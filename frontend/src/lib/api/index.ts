@@ -69,6 +69,7 @@ export type {
   WorktreeCleanupStatus,
   FrontendPreferences,
   SystemProxySettings,
+  SystemProxyTestResult,
   ProxyMode,
   SystemRenderingSettings,
   BackupCreateOptions,

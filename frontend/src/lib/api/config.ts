@@ -287,6 +287,16 @@ export interface SystemProxySettings {
   detected_source?: 'system' | 'env' | 'pac' | string | null;
 }
 
+export interface SystemProxyTestResult {
+  ok: boolean;
+  status: number | null;
+  elapsed_ms: number;
+  error: string | null;
+  /** Proxy that was used, credentials removed. `null` means a direct connection. */
+  proxy: string | null;
+  url: string;
+}
+
 export interface SystemRenderingSettings {
   acceleration_mode: 'auto' | 'force_gpu' | 'disable_gpu';
 }
@@ -359,6 +369,13 @@ export const systemSettingsApi = {
   ): Promise<SystemProxySettings> => {
     return backendCall<SystemProxySettings>('update_system_proxy_settings', {
       settings,
+    });
+  },
+  testProxy: async (
+    proxyUrl: string | null
+  ): Promise<SystemProxyTestResult> => {
+    return backendCall<SystemProxyTestResult>('test_system_proxy', {
+      proxy_url: proxyUrl,
     });
   },
   getRendering: async (): Promise<SystemRenderingSettings> => {

@@ -30,6 +30,7 @@ import {
   systemSettingsApi,
   type BackupPreview,
   type SystemProxySettings,
+  type SystemProxyTestResult,
   type SystemRenderingSettings,
 } from '@/lib/api';
 import { desktopApi } from '@/lib/api/misc';
@@ -106,6 +107,20 @@ function deepMerge<T extends Record<string, unknown>>(
   return result;
 }
 
+/** Hide `user:pass@` before a proxy URL is shown anywhere in the UI. */
+function redactProxyUrl(url: string): string {
+  return url.replace(/^([a-z][a-z0-9+.-]*:\/\/)[^@/?#]*@/i, '$1***@');
+}
+
+/** The proxy the connectivity test should use for the current draft. */
+function proxyUrlForTest(settings: SystemProxySettings): string | null {
+  if (settings.mode === 'manual') {
+    return settings.proxy_url?.trim() || null;
+  }
+  if (settings.detected_source === 'pac') return null;
+  return settings.detected_url?.trim() || null;
+}
+
 function proxyDetectionCopy(
   settings: SystemProxySettings,
   t: (key: string, options?: Record<string, string>) => string
@@ -115,9 +130,9 @@ function proxyDetectionCopy(
     return t('system.proxyDetectedNone');
   }
   if (settings.detected_source === 'pac') {
-    return t('system.proxyDetectedPac', { url: detected });
+    return t('system.proxyDetectedPac', { url: redactProxyUrl(detected) });
   }
-  return t('system.proxyDetected', { url: detected });
+  return t('system.proxyDetected', { url: redactProxyUrl(detected) });
 }
 
 function sanitizeDraft(draft: SystemSettingsConfig): SystemSettingsConfig {
@@ -146,6 +161,9 @@ export function SystemSettings() {
   const proxyDraftRef = useRef(proxyDraft);
   proxyDraftRef.current = proxyDraft;
   const [proxyLoading, setProxyLoading] = useState(true);
+  const [proxyTesting, setProxyTesting] = useState(false);
+  const [proxyTestResult, setProxyTestResult] =
+    useState<SystemProxyTestResult | null>(null);
   const [renderingDraft, setRenderingDraft] = useState<SystemRenderingSettings>(
     DEFAULT_RENDERING_SETTINGS
   );
@@ -306,8 +324,31 @@ export function SystemSettings() {
   const updateProxyDraft = (next: SystemProxySettings, settle = false) => {
     proxyDraftRef.current = next;
     setProxyDraft(next);
+    setProxyTestResult(null);
     if (settle) writeProxySettled(next);
     else writeProxyNow(next);
+  };
+
+  const handleTestProxy = async () => {
+    setProxyTesting(true);
+    setProxyTestResult(null);
+    try {
+      const result = await systemSettingsApi.testProxy(
+        proxyUrlForTest(proxyDraftRef.current)
+      );
+      setProxyTestResult(result);
+    } catch (error) {
+      setProxyTestResult({
+        ok: false,
+        status: null,
+        elapsed_ms: 0,
+        error: getInvokeErrorMessage(error) || t('system.proxyTestError'),
+        proxy: null,
+        url: 'https://hark.com/',
+      });
+    } finally {
+      setProxyTesting(false);
+    }
   };
 
   const handleCreateBackup = async () => {
@@ -717,6 +758,51 @@ export function SystemSettings() {
                 </p>
               </div>
             ) : null}
+
+            <div className="flex items-center justify-between gap-4">
+              <div className="min-w-0">
+                <Label>{t('system.proxyTest')}</Label>
+                <p className="settings-row__description">
+                  {t('system.proxyTestHint')}
+                </p>
+                {proxyTestResult ? (
+                  <p
+                    className={
+                      proxyTestResult.ok
+                        ? 'mt-1 text-sm text-success'
+                        : 'mt-1 text-sm break-all text-destructive'
+                    }
+                    role="status"
+                  >
+                    {proxyTestResult.ok
+                      ? t('system.proxyTestOk', {
+                          status: String(proxyTestResult.status ?? ''),
+                          ms: String(proxyTestResult.elapsed_ms),
+                        })
+                      : t('system.proxyTestFailed', {
+                          error:
+                            proxyTestResult.error ?? t('system.proxyTestError'),
+                        })}
+                  </p>
+                ) : null}
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => void handleTestProxy()}
+                disabled={proxyLoading || proxyTesting}
+              >
+                {proxyTesting ? (
+                  <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                ) : null}
+                {proxyTesting
+                  ? t('system.proxyTesting')
+                  : t('system.proxyTestButton')}
+              </Button>
+            </div>
+            <p className="settings-row__description">
+              {t('system.proxyBrowserHint')}
+            </p>
           </div>
         </SettingsSection>
 
