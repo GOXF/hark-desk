@@ -1094,8 +1094,42 @@ impl WorkerHost {
         match &self.backend {
             WorkerBackend::Lightweight => false,
             WorkerBackend::Dedicated(process) => process.lock().await.terminal_error.is_some(),
-            WorkerBackend::SharedNode { terminal_error, .. } => {
-                terminal_error.lock().await.is_some()
+            WorkerBackend::SharedNode {
+                host,
+                terminal_error,
+            } => {
+                if terminal_error.lock().await.is_some() {
+                    return true;
+                }
+                // A sibling slot's crash/respawn or the last slot's dispose can
+                // tear down (or replace) the shared Node process without marking
+                // this slot terminal. Treat such an orphaned slot as terminal so
+                // `activation_lease` re-activates it instead of every call
+                // failing with "Shared Node worker process is not running".
+                // `try_lock`: a busy process is in use, hence alive.
+                let Ok(mut guard) = host.inner.try_lock() else {
+                    return false;
+                };
+                let slot_key = (
+                    self.activation.plugin_id.clone(),
+                    self.activation.generation,
+                );
+                let orphaned = match guard.as_mut() {
+                    None => true,
+                    Some(process) => {
+                        !process.mounted_slots.contains(&slot_key)
+                            || matches!(process.child.try_wait(), Ok(Some(_)) | Err(_))
+                    }
+                };
+                if orphaned {
+                    host.sync_status(&mut guard);
+                    drop(guard);
+                    let mut term = terminal_error.lock().await;
+                    if term.is_none() {
+                        *term = Some("Shared Node worker slot was orphaned".to_owned());
+                    }
+                }
+                orphaned
             }
         }
     }
@@ -1241,6 +1275,9 @@ impl WorkerHost {
                 }
                 let mut guard = host.inner.lock().await;
                 let Some(process) = guard.as_mut() else {
+                    // Mark terminal so the next activation_lease re-activates.
+                    *terminal_error.lock().await =
+                        Some("Shared Node worker process is not running".to_owned());
                     return Err(WorkerHostError::new(
                         "worker_terminal",
                         "Shared Node worker process is not running",
@@ -1251,6 +1288,8 @@ impl WorkerHost {
                     self.activation.generation,
                 );
                 if !process.mounted_slots.contains(&slot_key) {
+                    *terminal_error.lock().await =
+                        Some("Shared Node worker slot is no longer mounted".to_owned());
                     return Err(WorkerHostError::new(
                         "worker_terminal",
                         "Shared Node worker slot is no longer mounted",

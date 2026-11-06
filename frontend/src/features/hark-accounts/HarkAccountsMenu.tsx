@@ -53,12 +53,18 @@ export function HarkAccountsMenu() {
     setBusy(true);
     try {
       const created = await addHarkAccount();
-      openHarkAccount(created);
+      await openHarkAccount(created);
     } catch (error) {
       toast.error(`添加 Hark 账号失败：${String(error)}`);
     } finally {
       setBusy(false);
     }
+  };
+
+  const openAccount = (profile: (typeof accounts)[number]) => {
+    void openHarkAccount(profile).catch((error) =>
+      toast.error(`打开 Hark 账号失败：${String(error)}`)
+    );
   };
 
   return (
@@ -82,12 +88,12 @@ export function HarkAccountsMenu() {
         ) : null}
         {accounts.map((profile) => (
           <DropdownMenuSub key={profile.id}>
-            <DropdownMenuSubTrigger onClick={() => openHarkAccount(profile)}>
+            <DropdownMenuSubTrigger onClick={() => openAccount(profile)}>
               <UserRound className="mr-2 h-3.5 w-3.5" />
               {harkAccountName(profile)}
             </DropdownMenuSubTrigger>
             <DropdownMenuSubContent>
-              <DropdownMenuItem onSelect={() => openHarkAccount(profile)}>
+              <DropdownMenuItem onSelect={() => openAccount(profile)}>
                 打开
               </DropdownMenuItem>
               <DropdownMenuItem

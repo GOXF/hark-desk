@@ -98,6 +98,13 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: node scripts/run-tauri-build.js --target x86_64-pc-windows-msvc --bundles nsis $TAURI_EXTRA_ARGS
 
+      - name: Smoke-test Windows desktop startup without a console
+        # Same startup smoke as upstream desktop-release.yml; non-blocking so
+        # a flaky runner does not drop the nightly installer.
+        continue-on-error: true
+        shell: pwsh
+        run: scripts/smoke-windows-desktop.ps1 -Executable "target/x86_64-pc-windows-msvc/release/vibex.exe"
+
       - name: Collect installer
         shell: bash
         run: |
