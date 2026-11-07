@@ -22,6 +22,7 @@
     "plugins": "插件",
     "browser": "浏览器",
     "webService": "远程连接",
+    "harkBridge": "文件桥",
     "logs": "运行日志",
     "system": "系统"
   },

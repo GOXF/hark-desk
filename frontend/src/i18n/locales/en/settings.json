@@ -22,6 +22,7 @@
     "plugins": "Plugins",
     "browser": "Browser",
     "webService": "Remote connection",
+    "harkBridge": "File bridge",
     "logs": "Runtime logs",
     "system": "System"
   },

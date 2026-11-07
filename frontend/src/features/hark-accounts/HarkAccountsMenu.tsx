@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { Plus, Trash2, UserRound } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { Cable, Plus, Trash2, UserRound } from 'lucide-react';
 
 import {
   DropdownMenu,
@@ -24,6 +25,8 @@ import {
   openHarkAccount,
   removeHarkAccount,
 } from './harkAccounts';
+import { HARK_BRIDGE_SETTINGS_PATH } from '@/features/hark-bridge/harkBridgeApi';
+import { openSettingsSurface } from '@/lib/api/settingsWindow';
 
 function HarkMark({ className }: { className?: string }) {
   return (
@@ -44,6 +47,7 @@ export function HarkAccountsMenu() {
   const { settings } = useBrowserPrefs();
   const accounts = harkAccountsFrom(settings.profiles);
   const [busy, setBusy] = useState(false);
+  const navigate = useNavigate();
 
   useEffect(() => {
     void loadBrowserPrefs().catch(() => {});
@@ -64,6 +68,13 @@ export function HarkAccountsMenu() {
   const openAccount = (profile: (typeof accounts)[number]) => {
     void openHarkAccount(profile).catch((error) =>
       toast.error(`打开 Hark 账号失败：${String(error)}`)
+    );
+  };
+
+  const openBridgeSettings = (profileId: string) => {
+    openSettingsSurface(
+      navigate,
+      `${HARK_BRIDGE_SETTINGS_PATH}?profile=${encodeURIComponent(profileId)}`
     );
   };
 
@@ -95,6 +106,10 @@ export function HarkAccountsMenu() {
             <DropdownMenuSubContent>
               <DropdownMenuItem onSelect={() => openAccount(profile)}>
                 打开
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => openBridgeSettings(profile.id)}>
+                <Cable className="mr-2 h-3.5 w-3.5" />
+                连接文件桥
               </DropdownMenuItem>
               <DropdownMenuItem
                 onSelect={() => {
