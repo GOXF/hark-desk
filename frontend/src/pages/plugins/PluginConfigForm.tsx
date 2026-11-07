@@ -811,7 +811,7 @@ export function PluginConfigForm({
     }
   };
 
-  const properties = useMemo(() => {
+  const properties = useMemo((): Array<[string, JsonSchema]> => {
     const base = schemaProperties(detail.configSchema);
     if (
       pluginId === 'vibex.code-completion' &&
@@ -826,7 +826,7 @@ export function PluginConfigForm({
       };
       const triggerIdx = base.findIndex(([key]) => key === 'triggerMode');
       if (triggerIdx >= 0) {
-        const next = [...base];
+        const next: Array<[string, JsonSchema]> = [...base];
         next.splice(triggerIdx + 1, 0, [
           'manualShortcut',
           manualShortcutSchema,
