@@ -186,6 +186,7 @@ jobs:
           retention-days: 3
 
       - name: Publish nightly
+        if: github.ref == 'refs/heads/main'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
