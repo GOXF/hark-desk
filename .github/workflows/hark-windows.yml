@@ -117,6 +117,8 @@ jobs:
             exit 1
           fi
           cp "${EXES[0]}" out/Hark-Desk-VibeX_x64-setup.exe
+          # 源码仓库私有，安装包和 latest.json 发到公开仓库，客户端不需要 token 就能更新。
+          RELEASE_REPO=GOXF/hark-desk-releases
           if [ "$UPDATER_SIGNED" = "true" ]; then
             if [ ! -f "${EXES[0]}.sig" ]; then
               echo "::error::Updater signature ${EXES[0]}.sig was not produced"
@@ -139,7 +141,7 @@ jobs:
                 },
               };
               fs.writeFileSync("out/latest.json", JSON.stringify(manifest, null, 2) + "\n");
-            ' "$APP_VERSION" "$GITHUB_SHA" "$GITHUB_REPOSITORY"
+            ' "$APP_VERSION" "$GITHUB_SHA" "$RELEASE_REPO"
             cat out/latest.json
           fi
           ls -la out
@@ -155,9 +157,12 @@ jobs:
       - name: Publish nightly
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          # RELEASES_TOKEN：对 GOXF/hark-desk-releases 有 Contents 读写权限的 PAT。
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          GH_REPO: GOXF/hark-desk-releases
         run: |
           set -euo pipefail
+          if [ -z "$GH_TOKEN" ]; then echo "::error::缺少 secrets.RELEASES_TOKEN，无法发布到 GOXF/hark-desk-releases"; exit 1; fi
           gh release view nightly >/dev/null 2>&1 || gh release create nightly --prerelease --title "Nightly" --notes "main 最新构建"
           gh release upload nightly out/Hark-Desk-VibeX_x64-setup.exe --clobber
           if [ "$UPDATER_SIGNED" = "true" ]; then

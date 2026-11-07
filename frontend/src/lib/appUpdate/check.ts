@@ -162,7 +162,7 @@ async function checkSignedFeed(): Promise<SignedFeedUpdate | null> {
 }
 
 // Hark Desk ships its own builds through the signed updater feed configured
-// in tauri.conf.json (plugins.updater.endpoints → GOXF/hark-desk nightly
+// in tauri.conf.json (plugins.updater.endpoints → GOXF/hark-desk-releases nightly
 // latest.json). The backend GitHub-release fallback still points at the
 // upstream VibeX repository, whose tags would surface as bogus, non-installable
 // "updates", so it is disabled here and only the signed feed decides.
