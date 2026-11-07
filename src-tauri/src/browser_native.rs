@@ -2518,9 +2518,17 @@ impl TauriNativeTabs {
     }
 }
 
+/// 宿主自己（非插件、非 Agent）要用内置浏览器时的入口，例如
+/// `hark_bridge_inject` 把文件桥连接消息发进 Hark 项目聊天。
+/// 以 Tauri managed state 挂在 AppHandle 上，用 `app.try_state::<HostBrowserService>()` 取。
+pub struct HostBrowserService(pub Arc<browser_host::BrowserService>);
+
 pub fn desktop_browser_service(app: tauri::AppHandle) -> Arc<browser_host::BrowserService> {
-    let native = Arc::new(TauriNativeTabs::new(app));
+    let native = Arc::new(TauriNativeTabs::new(app.clone()));
     let service = Arc::new(browser_host::BrowserService::new(native.clone(), true));
     native.bind(Arc::downgrade(&service));
+    // 同一个 BrowserService 实例同时交给插件 broker 和宿主内部代码，
+    // 这样宿主能找到用户在界面里打开的 hark.com 标签页。
+    let _ = app.manage(HostBrowserService(service.clone()));
     service
 }
