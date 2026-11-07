@@ -19,6 +19,7 @@ import {
   ArrowLeft,
   Bot,
   BookOpenText,
+  Cable,
   Clock,
   FileText,
   GitBranch,
@@ -161,6 +162,11 @@ export const SETTINGS_NAV_GROUPS: Omit<SettingsNavGroup, 'id'>[] = [
         labelKey: 'webService',
         icon: Globe,
         anyOf: ['desktop.tauri', 'device.pair'],
+      },
+      {
+        path: '/settings/hark-bridge',
+        labelKey: 'harkBridge',
+        icon: Cable,
       },
       {
         path: '/settings/logs',

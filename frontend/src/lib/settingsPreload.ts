@@ -66,6 +66,10 @@ export function loadWebServiceSettings() {
   return import('@/pages/settings/WebServiceSettings');
 }
 
+export function loadHarkBridgeSettings() {
+  return import('@/pages/settings/HarkBridgeSettings');
+}
+
 export function loadPluginsPage() {
   return import('@/pages/Plugins');
 }
@@ -89,6 +93,7 @@ const SETTINGS_PATH_LOADERS: Record<string, () => Promise<unknown>> = {
   '/settings/automations': loadAutomationCenter,
   '/settings/web-service': loadWebServiceSettings,
   '/settings/devices': loadWebServiceSettings,
+  '/settings/hark-bridge': loadHarkBridgeSettings,
   '/settings/logs': loadLogsSettings,
   '/settings/system': loadSystemSettings,
   '/plugins': loadPluginsPage,

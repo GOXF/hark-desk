@@ -10,6 +10,7 @@ import {
   loadChatChannelSettings,
   loadEditorSettings,
   loadGeneralSettings,
+  loadHarkBridgeSettings,
   loadInstructionsSettings,
   loadLogsSettings,
   loadMcpSettings,
@@ -62,6 +63,10 @@ const ChatChannelSettings = lazyNamed(
 );
 const EditorSettings = lazyNamed(loadEditorSettings, 'EditorSettings');
 const GeneralSettings = lazyNamed(loadGeneralSettings, 'GeneralSettings');
+const HarkBridgeSettings = lazyNamed(
+  loadHarkBridgeSettings,
+  'HarkBridgeSettings'
+);
 const InstructionsSettings = lazyNamed(
   loadInstructionsSettings,
   'InstructionsSettings'
@@ -127,6 +132,7 @@ export function SettingsAppRoutes() {
             path="devices"
             element={<Navigate to="/settings/web-service" replace />}
           />
+          <Route path="hark-bridge" element={<HarkBridgeSettings />} />
           <Route path="logs" element={<LogsSettings />} />
           <Route path="system" element={<SystemSettings />} />
           <Route
