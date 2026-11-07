@@ -5,9 +5,15 @@
         "template": "installer/installer.nsi",
         "installerHooks": "installer/hooks.nsh",
         "installMode": "currentUser",
-        "languages": ["SimpChinese", "English"],
+        "languages": [
+          "SimpChinese",
+          "English"
+        ],
         "displayLanguageSelector": false
       }
+    },
+    "resources": {
+      "resources/hark-bridge/*": "hark-bridge/"
     }
   }
 }

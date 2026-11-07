@@ -49,6 +49,39 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Setup Go（文件桥 HarkBridge）
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: bridge-go/go.mod
+          cache-dependency-path: bridge-go/go.sum
+
+      - name: 构建 HarkBridge.exe 并下载 cloudflared
+        # 两个文件放进 src-tauri/resources/hark-bridge/，由 tauri.windows.conf.json 的
+        # bundle.resources 打进安装包的 hark-bridge/ 目录（HarkBridge 要求 cloudflared 和它在同一目录）。
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dst = Join-Path $PWD 'src-tauri/resources/hark-bridge'
+          New-Item -ItemType Directory -Force -Path $dst | Out-Null
+          $env:CGO_ENABLED = '0'
+          $env:GOOS = 'windows'
+          $env:GOARCH = 'amd64'
+          Push-Location bridge-go
+          go build -trimpath -ldflags '-s -w' -o (Join-Path $dst 'HarkBridge.exe') .
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Pop-Location
+          $cf = Join-Path $dst 'cloudflared.exe'
+          $url = 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe'
+          for ($i = 1; $i -le 3; $i++) {
+            try { Invoke-WebRequest $url -OutFile $cf; break }
+            catch { if ($i -eq 3) { throw }; Start-Sleep -Seconds (5 * $i) }
+          }
+          foreach ($f in @('HarkBridge.exe', 'cloudflared.exe')) {
+            $p = Join-Path $dst $f
+            if (-not (Test-Path $p) -or (Get-Item $p).Length -lt 1MB) { throw "$f 缺失或大小异常" }
+          }
+          Get-ChildItem $dst | Format-Table Name, Length
+
       - name: Set build version
         shell: bash
         run: |

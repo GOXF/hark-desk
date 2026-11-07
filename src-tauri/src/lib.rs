@@ -15,6 +15,8 @@ mod deeplink;
 mod delegation;
 mod error;
 mod events;
+mod hark_bridge;
+mod hark_bridge_inject;
 mod host_bus;
 mod host_client;
 mod host_windows;
@@ -352,6 +354,8 @@ pub(crate) fn cleanup_processes_on_exit(app: &tauri::AppHandle) {
         tauri::async_runtime::block_on(agents::terminal::agent_terminal_registry().release_all());
     }
     kill_companion_processes_on_exit();
+    // 结束本应用启动的文件桥进程（只按 pid 结束自己的，不按进程名，避免误杀 Hark Hub 的文件桥）。
+    hark_bridge::shutdown();
 }
 
 pub(crate) fn graceful_exit_app(app: &tauri::AppHandle) {
@@ -674,6 +678,8 @@ pub fn run() {
         if let Err(error) = tray::install_tray_icon(app.handle()) {
             tracing::warn!("Failed to install tray icon: {}", error);
         }
+        // 本地文件桥（HarkBridge）：读设置并在后台启动已配置的桥。
+        hark_bridge::init(app.handle());
         app_chrome::install(app.handle());
         app_chrome::apply_startup_args(app.handle());
         schedule_main_window_reveal(app);
@@ -759,6 +765,20 @@ pub fn run() {
         commands::settings_window::open_settings_window,
         commands::app_window::open_app_window,
         plugin_dev_server::plugin_dev_connection,
+        hark_bridge::commands::hark_bridge_state,
+        hark_bridge::commands::hark_bridge_tunnel_save,
+        hark_bridge::commands::hark_bridge_create,
+        hark_bridge::commands::hark_bridge_update,
+        hark_bridge::commands::hark_bridge_delete,
+        hark_bridge::commands::hark_bridge_start,
+        hark_bridge::commands::hark_bridge_stop,
+        hark_bridge::commands::hark_bridge_set_default,
+        hark_bridge::commands::hark_bridge_bind,
+        hark_bridge::commands::hark_bridge_unbind,
+        hark_bridge::commands::hark_bridge_connect_message,
+        hark_bridge::commands::hark_bridge_send,
+        hark_bridge::commands::hark_bridge_confirm,
+        hark_bridge::commands::hark_bridge_logs,
     ])
     .build(tauri::generate_context!())
     .expect("error while building tauri application")

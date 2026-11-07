@@ -129,3 +129,6 @@ logs/
 .agents/skills/geo-optimizer/
 .agents/skills/postiz/
 .agents/skills/video-shotcraft/
+
+# 文件桥打包资源（CI 构建/下载，不入库）
+src-tauri/resources/hark-bridge/*.exe
