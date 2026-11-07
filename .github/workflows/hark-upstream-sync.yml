@@ -1,0 +1,92 @@
+name: Hark Upstream Sync
+
+# 每天把上游 Xircth/VibeX 的 master 合并进 main。
+# - 无冲突：推 main，再触发 Hark Desk Windows 打包（应用内自动更新随之生效）。
+# - 有冲突或推送被拒（例如上游改了 .github/workflows，GITHUB_TOKEN 无权推送）：
+#   不动 main，开一个 issue 说明，等人工处理。绝不覆盖 Hark 的改动。
+
+on:
+  schedule:
+    - cron: "17 9 * * *" # 每天 UTC 09:17
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+  issues: write
+
+concurrency:
+  group: hark-upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Merge upstream
+        id: merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -u
+          git config user.name "GOXF"
+          git config user.email "131693427+GOXF@users.noreply.github.com"
+          git remote add upstream https://github.com/Xircth/VibeX.git
+          git fetch --no-tags upstream master
+
+          UP=$(git rev-parse --short upstream/master)
+          echo "up=$UP" >> "$GITHUB_OUTPUT"
+          if git merge-base --is-ancestor upstream/master HEAD; then
+            echo "已包含上游 $UP，无需同步"
+            echo "result=uptodate" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if ! git merge --no-edit -m "chore(sync): 合并上游 Xircth/VibeX master ($UP)" upstream/master; then
+            git diff --name-only --diff-filter=U > /tmp/conflicts.txt || true
+            git merge --abort
+            echo "result=conflict" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if ! git push origin HEAD:main 2> /tmp/push.err; then
+            cat /tmp/push.err
+            echo "result=pushfail" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "result=merged" >> "$GITHUB_OUTPUT"
+
+      - name: Trigger Windows build
+        if: steps.merge.outputs.result == 'merged'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run hark-windows.yml --ref main
+
+      - name: Report problem
+        if: steps.merge.outputs.result == 'conflict' || steps.merge.outputs.result == 'pushfail'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESULT: ${{ steps.merge.outputs.result }}
+          UP: ${{ steps.merge.outputs.up }}
+        run: |
+          TITLE="上游同步需要人工处理（VibeX $UP）"
+          if gh issue list --state open --search "in:title $TITLE" --json number --jq '.[0].number' | grep -q .; then
+            echo "已有同名 issue"; exit 0
+          fi
+          {
+            if [ "$RESULT" = conflict ]; then
+              echo "合并上游 Xircth/VibeX master（$UP）时出现冲突，main 未改动。冲突文件："
+              echo; sed 's/^/- /' /tmp/conflicts.txt
+            else
+              echo "合并成功但推送被拒（多半是上游改了 .github/workflows，GITHUB_TOKEN 无权推送），main 未改动。"
+              echo; echo '```'; cat /tmp/push.err; echo '```'
+            fi
+            echo
+            echo "本地处理：git fetch upstream && git merge upstream/master，解决后推 main。"
+          } > /tmp/body.md
+          gh issue create --title "$TITLE" --body-file /tmp/body.md
