@@ -15,6 +15,7 @@ mod deeplink;
 mod delegation;
 mod error;
 mod events;
+mod hark_bridge_inject;
 mod host_bus;
 mod host_client;
 mod host_windows;

@@ -701,6 +701,97 @@ impl BrowserService {
             })
         };
     }
+
+    // ------------------------------------------------------------------
+    // 宿主内部通道（Hark Desk 自己发起的操作专用）
+    //
+    // 下面几个方法只给宿主 Rust 代码调用（目前只有 src-tauri 的
+    // hark_bridge_inject：把文件桥连接消息发进 Hark 项目聊天）。它们**不**在
+    // `dispatch` 的任何 operation 里出现，所以插件 / Agent 的浏览器工具都够不着：
+    // Agent 那条路照旧要过 share grant、eval 开关和逐条确认，这里没有放宽任何一项。
+    //
+    // 之所以绕开 grant：hark.com 标签默认 grant 可能是 none（不给 Agent 看），
+    // 但「宿主替用户把一条消息发进用户自己的 Hark 账号」不是 Agent 行为，不该因为
+    // 没给 Agent 授权而做不了；反过来，也不能为了这一次调用把 grant 提上去——那等于
+    // 给 Agent 开了权限。所以单独开一条只有宿主能走的窄通道，并要求调用方声明
+    // 期望的 origin，标签当前 origin 不符就拒绝求值。
+    // ------------------------------------------------------------------
+
+    /// 某个 profile 下当前登记的所有标签页（快照）。宿主内部用。
+    pub fn host_tabs_of_profile(&self, profile_id: &str) -> Vec<BrowserTab> {
+        let tabs = self.tabs.lock().unwrap_or_else(|p| p.into_inner());
+        tabs.values()
+            .filter(|record| record.tab.profile_id == profile_id)
+            .map(|record| record.tab.clone())
+            .collect()
+    }
+
+    /// 在指定 profile 里开一个后台标签（不发 `tab.open` 通知，界面不会给它建面板），
+    /// grant 固定为 none：Agent 的工具对它一律拒绝。打开后最多等 `max_wait` 让首屏加载。
+    /// 用完必须调用 [`Self::host_close_tab`] 关掉。
+    pub async fn host_open_background_tab(
+        &self,
+        url: &str,
+        profile_id: &str,
+        bounds: BrowserBounds,
+        max_wait: Duration,
+    ) -> Result<BrowserTab, BrowserHostError> {
+        let tab = self
+            .create_tab(Some(url), Some(profile_id), bounds, Some(GrantLevel::None))
+            .await?;
+        if tab.url != "about:blank" {
+            self.wait_for_tab_settle(&tab.tab_id, max_wait).await;
+        }
+        Ok(self.tab(&tab.tab_id).unwrap_or(tab))
+    }
+
+    /// 关闭宿主自己开的后台标签，并从登记表里移除。
+    pub async fn host_close_tab(&self, tab_id: &str) -> Result<(), BrowserHostError> {
+        let result = self.native.close(tab_id).await;
+        self.tabs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(tab_id);
+        result
+    }
+
+    /// 宿主在标签页的 WebView 里直接求值（走 `NativeTabs::eval`，即 wry 的
+    /// `evaluate_script_with_callback`），不看 grant、不弹确认。
+    ///
+    /// 只有标签当前登记的 origin 等于 `expected_origin` 才执行；超过 `timeout`
+    /// 没有回答就报错。返回值是引擎给的原始结果（通常是 JSON 文本），调用方可用
+    /// `agent::decode_eval_result` 解开。
+    pub async fn host_eval_on_origin(
+        &self,
+        tab_id: &str,
+        expected_origin: &str,
+        expression: &str,
+        timeout: Duration,
+    ) -> Result<String, BrowserHostError> {
+        if !self.available || !self.policy.enabled() {
+            return Err(BrowserHostError::new(
+                "browser_unavailable",
+                "native browser tabs are not available on this Host",
+            ));
+        }
+        let tab = self.tab(tab_id)?;
+        if tab.origin.as_deref() != Some(expected_origin) {
+            return Err(BrowserHostError::new(
+                "browser_wrong_origin",
+                format!(
+                    "tab {tab_id} is on {}, not {expected_origin}",
+                    tab.origin.as_deref().unwrap_or("(no origin)")
+                ),
+            ));
+        }
+        match tokio::time::timeout(timeout, self.native.eval(tab_id, expression)).await {
+            Ok(result) => result,
+            Err(_) => Err(BrowserHostError::new(
+                "browser_read_failed",
+                "the page did not answer in time",
+            )),
+        }
+    }
 }
 
 pub async fn dispatch(
