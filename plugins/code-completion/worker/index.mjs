@@ -1,4 +1,9 @@
-import { definePluginWorker } from '@vibex/plugin-sdk';
+function definePluginWorker(setup) {
+  return {
+    apiVersion: '2.0',
+    setup,
+  };
+}
 
 const DEFAULT_CONFIG = Object.freeze({
   enabled: true,
@@ -7,6 +12,7 @@ const DEFAULT_CONFIG = Object.freeze({
   apiKey: '',
   model: 'gpt-4o-mini',
   triggerMode: 'auto',
+  manualShortcut: 'Alt+\\',
   completionScope: 'smart',
   ignoredGlobs: '.env*, *.pem, *.key, *secret*, *.min.js',
   disabledLanguages: 'markdown, plaintext',
@@ -16,10 +22,10 @@ const DEFAULT_CONFIG = Object.freeze({
 
 const MAX_SINGLE_LINE_LENGTH = 2000;
 const CHARS_PER_TOKEN = 4;
-const MAX_PREFIX_TOKENS = 1500;
-const MAX_SUFFIX_TOKENS = 500;
-const MAX_NEIGHBOR_TOKENS = 400;
-const MAX_NEIGHBOR_COUNT = 3;
+const MAX_PREFIX_TOKENS = 600;
+const MAX_SUFFIX_TOKENS = 200;
+const MAX_NEIGHBOR_TOKENS = 200;
+const MAX_NEIGHBOR_COUNT = 2;
 
 const OPENAI_SYSTEM_PROMPT = [
   'You are an ultra-low-latency inline code completion engine (Fill-in-the-Middle).',
@@ -28,7 +34,8 @@ const OPENAI_SYSTEM_PROMPT = [
   '1. Wrap your raw code continuation strictly inside <COMPLETION> and </COMPLETION> tags.',
   '2. NEVER output markdown code fences (```), language identifiers, explanations, or prose.',
   '3. NEVER repeat the code already present at the end of <PREFIX> or at the start of <SUFFIX>.',
-  '4. Preserve the exact indentation, naming conventions, and syntax of the surrounding file.',
+  '4. If <PREFIX> ends with a function/method/class name or partial signature (e.g. `def calc_score`, `function parseData`), complete its parameters and body directly from the cursor.',
+  '5. Preserve the exact indentation, naming conventions, and syntax of the surrounding file.',
 ].join('\n');
 
 const ANTHROPIC_SYSTEM_PROMPT = [
@@ -110,47 +117,242 @@ export function resolveDynamicScope({
   maxTokens = DEFAULT_CONFIG.maxTokens,
 } = {}) {
   const safeMaxTokens = Math.max(16, Math.min(1024, Number(maxTokens) || DEFAULT_CONFIG.maxTokens));
-  const prefixLines = String(prefix).split('\n');
-  const currentLinePrefix = prefixLines[prefixLines.length - 1] || '';
   const suffixLines = String(suffix).split('\n');
   const currentLineSuffix = suffixLines[0] || '';
 
   if (completionScope === 'single-line') {
     return {
       isSingleLine: true,
-      maxTokens: Math.min(64, safeMaxTokens),
+      maxTokens: Math.min(48, safeMaxTokens),
       stopSequences: ['\n', '\r\n'],
     };
   }
 
-  // If non-whitespace characters exist on the right side of the cursor on the same line
+  // If non-closing tokens exist on the right side of the cursor on the same line
   // (e.g., inside function call arguments `foo(|, 0)`), constrain to single-line completion.
+  // Otherwise (end of line, blank line, after a function name, or inside closing delimiters `)`, `):`, `}`, `];`),
+  // allow smart multi-line completion at any position in code.
   const trimmedSuffixLine = currentLineSuffix.trim();
   const hasNonWhitespaceOnRight = trimmedSuffixLine.length > 0;
-  // Block header patterns (`{`, `:`, `=>`, `(`, empty indented line) allow multi-line block completions
-  // when the right side of the current line is empty or only closing delimiters (`}`, `)`, `]`, `);`).
-  const isOnlyClosingDelimitersOnRight = /^[}\]);,\s]*$/.test(trimmedSuffixLine) && !trimmedSuffixLine.startsWith(',');
-  const trimmedPrefixLine = currentLinePrefix.trim();
-  const isBlockOpener =
-    trimmedPrefixLine.endsWith('{') ||
-    trimmedPrefixLine.endsWith(':') ||
-    trimmedPrefixLine.endsWith('=>') ||
-    trimmedPrefixLine.endsWith('(') ||
-    trimmedPrefixLine.length === 0;
+  const isOnlyClosingDelimitersOnRight =
+    /^[}\]);,:\s]*$/.test(trimmedSuffixLine) && !trimmedSuffixLine.startsWith(',');
 
-  if (hasNonWhitespaceOnRight && (!isBlockOpener || !isOnlyClosingDelimitersOnRight)) {
+  if (hasNonWhitespaceOnRight && !isOnlyClosingDelimitersOnRight) {
     return {
       isSingleLine: true,
-      maxTokens: Math.min(64, safeMaxTokens),
+      maxTokens: Math.min(48, safeMaxTokens),
       stopSequences: ['\n', '\r\n'],
     };
   }
 
   return {
     isSingleLine: false,
-    maxTokens: Math.min(256, safeMaxTokens),
-    stopSequences: ['\n\n\n'],
+    maxTokens: Math.min(160, Math.max(128, safeMaxTokens)),
+    stopSequences: [],
   };
+}
+
+/**
+ * Detect the indentation unit (`'    '`, `'  '`, or `'\t'`) used in the document prefix.
+ */
+function detectIndentationUnit(prefix = '', languageId = '') {
+  const lines = String(prefix || '').split('\n');
+  let fourSpaceCount = 0;
+  let twoSpaceCount = 0;
+  let tabCount = 0;
+
+  for (let i = Math.max(0, lines.length - 40); i < lines.length; i += 1) {
+    const line = lines[i];
+    if (!line || !line.trim()) continue;
+    const match = line.match(/^([ \t]+)/);
+    if (!match) continue;
+    const indent = match[1];
+    if (indent.includes('\t')) {
+      tabCount += 1;
+    } else if (indent.length % 4 === 0) {
+      fourSpaceCount += 1;
+    } else if (indent.length % 2 === 0) {
+      twoSpaceCount += 1;
+    }
+  }
+
+  if (tabCount > fourSpaceCount && tabCount > twoSpaceCount) {
+    return '\t';
+  }
+  const isFourSpaceLang =
+    /^(python|rust)$/i.test(String(languageId || '').trim()) ||
+    /\b(def |class |self\.|elif |import )/.test(prefix);
+  if (isFourSpaceLang) {
+    return twoSpaceCount > fourSpaceCount * 2 && twoSpaceCount >= 3 ? '  ' : '    ';
+  }
+  if (fourSpaceCount > twoSpaceCount) {
+    return '    ';
+  }
+  return '  ';
+}
+
+/**
+ * Normalize multi-line and next-line completion indentation so that:
+ * 1. When the cursor is on a whitespace-only line (`N` spaces) and the model outputs a dedented block
+ *    (`M < N` spaces, e.g. `    def step(self):` after pressing Enter on a 16-space `return pos` line),
+ *    prepend `\n` so Monaco renders the dedented block at exact `M` spaces on the next line instead of
+ *    gluing `M` spaces onto the existing `N` spaces (`N + M` spaces).
+ * 2. When the cursor is on a whitespace-only line (`N` spaces) and the model outputs line 1 with 0 leading
+ *    spaces (continuing from cursor) and lines 2+ with relative indentation (`< N`), add `N` spaces to lines 2+.
+ * 3. When the cursor is at the end of a non-empty line (`N` spaces) and the model outputs a next-line block:
+ *    - After a block header (`:` or `{`), ensure the child block is indented by at least `N + indentUnit`.
+ *    - After `return`/`break`/`continue`/`raise`/`pass`, if the model outputs a new class method `def ...` at
+ *      the wrong indentation (e.g. copying the `return` line's 16 spaces), align it to the class method indent.
+ */
+function normalizeCompletionIndentation(
+  text,
+  {
+    prefix = '',
+    currentLinePrefix = '',
+    isSingleLine = false,
+    hadLeadingNewlineInTag = false,
+    languageId = '',
+  } = {},
+) {
+  if (!text || isSingleLine || text.trim().length === 0) {
+    return text;
+  }
+
+  const indentUnit = detectIndentationUnit(prefix, languageId);
+  const indentStep = indentUnit.length;
+  const trimmedCurrentPrefix = currentLinePrefix.trim();
+  const currentIndent = currentLinePrefix.match(/^[ \t]*/)?.[0] || '';
+  const currentIndentLen = currentIndent.length;
+
+  // Case 1: Cursor is on a whitespace-only line with existing indentation (`currentIndentLen > 0`)
+  if (trimmedCurrentPrefix.length === 0 && currentIndentLen > 0 && !text.startsWith('\n')) {
+    const lines = text.split('\n');
+    const firstLine = lines[0] || '';
+    const firstLineIndent = (firstLine.match(/^[ \t]*/)?.[0] || '').length;
+
+    // 1a. Model output a dedented block (`0 < firstLineIndent < currentIndentLen`, or top-level `def`/`class` at 0)
+    const isTopLevelDeclarationAtZero =
+      firstLineIndent === 0 &&
+      /^(def |class |async def |@\w+|function |export |pub fn |fn )/.test(firstLine.trim());
+
+    if (
+      (firstLineIndent > 0 && firstLineIndent < currentIndentLen) ||
+      isTopLevelDeclarationAtZero
+    ) {
+      return `\n${text}`;
+    }
+
+    // 1b. Model started line 1 at cursor (`firstLineIndent === 0`) and wrote lines 2+ with relative indentation
+    if (firstLineIndent === 0 && lines.length > 1) {
+      const firstNonEmptyRestIdx = lines.findIndex(
+        (line, idx) => idx > 0 && line.trim().length > 0,
+      );
+      if (firstNonEmptyRestIdx !== -1) {
+        const secondLine = lines[firstNonEmptyRestIdx];
+        const secondLineIndent = (secondLine.match(/^[ \t]*/)?.[0] || '').length;
+        const firstLineTrimmed = firstLine.trim();
+        const firstLineOpensBlock =
+          firstLineTrimmed.endsWith(':') || firstLineTrimmed.endsWith('{');
+        const expectedMinSecondIndent = firstLineOpensBlock
+          ? currentIndentLen + indentStep
+          : currentIndentLen;
+
+        if (secondLineIndent < expectedMinSecondIndent) {
+          const adjustedLines = lines.map((line, idx) => {
+            if (idx === 0 || line.trim().length === 0) return line;
+            return `${currentIndent}${line}`;
+          });
+          return adjustedLines.join('\n');
+        }
+      }
+    }
+
+    return text;
+  }
+
+  // Case 2: Cursor is at the end of a non-empty line and completion starts on a new line (`text.startsWith('\n')`)
+  if (trimmedCurrentPrefix.length > 0 && text.startsWith('\n')) {
+    const leadingNewlinesMatch = text.match(/^(\n+)/);
+    const leadingNewlines = leadingNewlinesMatch ? leadingNewlinesMatch[1] : '\n';
+    const bodyText = text.slice(leadingNewlines.length);
+    const bodyLines = bodyText.split('\n');
+    const firstNonEmptyIdx = bodyLines.findIndex((line) => line.trim().length > 0);
+    if (firstNonEmptyIdx === -1) {
+      return text;
+    }
+
+    const firstNonEmptyLine = bodyLines[firstNonEmptyIdx];
+    const firstNonEmptyTrimmed = firstNonEmptyLine.trim();
+    const firstIndent = (firstNonEmptyLine.match(/^[ \t]*/)?.[0] || '').length;
+
+    const isCurrentBlockOpener =
+      trimmedCurrentPrefix.endsWith(':') || trimmedCurrentPrefix.endsWith('{');
+    const isCurrentBlockTerminator =
+      /^(return|break|continue|raise|pass)\b/.test(trimmedCurrentPrefix);
+
+    // 2a. Current line opens a block (`def ...:`, `if ...:`, `while ...:`, `{`), so next line must be indented
+    if (isCurrentBlockOpener) {
+      const expectedIndentLen = currentIndentLen + indentStep;
+      if (firstIndent < expectedIndentLen) {
+        const delta = expectedIndentLen - firstIndent;
+        const pad = ' '.repeat(delta);
+        const reindented = bodyLines
+          .map((line) => (line.trim().length > 0 ? `${pad}${line}` : ''))
+          .join('\n');
+        return `${leadingNewlines}${reindented}`;
+      }
+    }
+
+    // 2b. Current line is `return ...` inside a class method, and completion starts a new method `def ...`
+    if (
+      isCurrentBlockTerminator &&
+      /^(def |async def |@\w+)/.test(firstNonEmptyTrimmed)
+    ) {
+      // Find the indentation of the enclosing `def ` in prefix (typically 4 spaces inside a class, or 0 at module level)
+      const prefixLines = String(prefix || '').split('\n');
+      let enclosingDefIndentLen = 0;
+      for (let i = prefixLines.length - 1; i >= 0; i -= 1) {
+        const pLine = prefixLines[i];
+        if (/^[ \t]*(def |async def )/.test(pLine)) {
+          enclosingDefIndentLen = (pLine.match(/^[ \t]*/)?.[0] || '').length;
+          break;
+        }
+      }
+      if (firstIndent !== enclosingDefIndentLen) {
+        const delta = enclosingDefIndentLen - firstIndent;
+        const reindented = bodyLines
+          .map((line) => {
+            if (line.trim().length === 0) return '';
+            if (delta > 0) {
+              return `${' '.repeat(delta)}${line}`;
+            }
+            const lineIndent = (line.match(/^[ \t]*/)?.[0] || '').length;
+            const removeCount = Math.min(lineIndent, Math.abs(delta));
+            return line.slice(removeCount);
+          })
+          .join('\n');
+        return `${leadingNewlines}${reindented}`;
+      }
+    }
+
+    // 2c. Normal statement followed by a next-line sibling statement that lost its leading indentation (`firstIndent === 0`)
+    if (
+      !isCurrentBlockOpener &&
+      !isCurrentBlockTerminator &&
+      currentIndentLen > 0 &&
+      firstIndent === 0 &&
+      !/^(def |class |async def |@\w+|if __name__|export |function |import |from )/.test(
+        firstNonEmptyTrimmed,
+      )
+    ) {
+      const reindented = bodyLines
+        .map((line) => (line.trim().length > 0 ? `${currentIndent}${line}` : ''))
+        .join('\n');
+      return `${leadingNewlines}${reindented}`;
+    }
+  }
+
+  return text;
 }
 
 /**
@@ -293,6 +495,7 @@ export function buildFimContext({
   promptSections.push(
     `<FIM_TASK>`,
     `Complete the exact code at the cursor between <PREFIX> and <SUFFIX>.`,
+    `Pay strict attention to the indentation level of <PREFIX> and <SUFFIX>.`,
     `Wrap the completion strictly in <COMPLETION>...</COMPLETION> without repeating <PREFIX> or <SUFFIX>.`,
     `<PREFIX>${truncatedPrefix}</PREFIX>`,
     `<SUFFIX>${truncatedSuffix}</SUFFIX>`,
@@ -406,12 +609,18 @@ export function buildProtocolHttpRequest({
   if (apiKey) {
     headers.Authorization = `Bearer ${apiKey}`;
   }
-  const stop = Array.from(new Set(['</COMPLETION>', ...extraStops])).slice(0, 4);
+  // Do not pass bare `\n` or `\r\n` to OpenAI chat completions since the model outputs `<COMPLETION>\n...`
+  const safeOpenAiStops = extraStops.filter((seq) => seq !== '\n' && seq !== '\r\n');
+  const stop = Array.from(new Set(['</COMPLETION>', ...safeOpenAiStops])).slice(0, 4);
+  const disableThinking = /deepseek|bigmodel|glm|doubao|volces|ark|kimi|moonshot|qwen/i.test(
+    `${mergedConfig.baseUrl || ''} ${model || ''}`,
+  );
   const body = {
     model,
     max_tokens: maxTokens,
     temperature,
     stop,
+    ...(disableThinking ? { thinking: { type: 'disabled' } } : {}),
     messages: [
       {
         role: 'system',
@@ -447,6 +656,17 @@ export function extractRawCompletionFromResponse(protocol, payload) {
 
   if (Array.isArray(payload.choices) && payload.choices.length > 0) {
     const choice = payload.choices[0] || {};
+    if (choice.message && typeof choice.message.content === 'string' && choice.message.content.length > 0) {
+      return choice.message.content;
+    }
+    if (choice.message && typeof choice.message.reasoning_content === 'string') {
+      const tagged = choice.message.reasoning_content.match(
+        /<COMPLETION>[\s\S]*?<\/COMPLETION>/i,
+      );
+      if (tagged) {
+        return tagged[0];
+      }
+    }
     if (choice.message && typeof choice.message.content === 'string') {
       return choice.message.content;
     }
@@ -464,30 +684,34 @@ export function extractRawCompletionFromResponse(protocol, payload) {
 
 /**
  * Deterministic Output Post-Processor:
- * 1. Extract content inside `<COMPLETION>...</COMPLETION>` or strip dangling tags.
+ * 1. Extract content inside `<COMPLETION>...</COMPLETION>` or strip tags.
  * 2. Strip Markdown code fences (```lang ... ```).
  * 3. Deduplicate prefix overlap (current line before cursor or last line of prefix).
- * 4. Deduplicate suffix overlap (current line after cursor, first non-empty line of suffix, or redundant closing brackets).
- * 5. Enforce single-line constraint if `isSingleLine` is true.
+ * 4. Preserve or prepend `\n` when the cursor is at the end of a non-empty line and the completion is an indented next-line block.
+ * 5. Normalize indentation across single-line, whitespace-only line, and multi-line completions.
+ * 6. Deduplicate suffix overlap (current line after cursor, first non-empty line of suffix, or redundant closing brackets).
+ * 7. Enforce single-line constraint if `isSingleLine` is true.
  */
 export function postProcessCompletion(
   rawText,
-  { prefix = '', suffix = '', isSingleLine = false } = {},
+  { prefix = '', suffix = '', isSingleLine = false, languageId = '' } = {},
 ) {
   if (typeof rawText !== 'string' || rawText.length === 0) {
     return '';
   }
 
   let text = rawText.replace(/\r\n/g, '\n');
+  const hadLeadingNewlineInTag =
+    /<COMPLETION>[ \t]*\n/i.test(text) || text.startsWith('\n');
 
   // 1. Extract `<COMPLETION>...</COMPLETION>` if present, or strip tags
-  const taggedMatch = text.match(/<COMPLETION>([\s\S]*?)<\/COMPLETION>/i);
+  const taggedMatch = text.match(/<COMPLETION>([\s\S]*?)(?:\r?\n)?<\/COMPLETION>/i);
   if (taggedMatch) {
     text = taggedMatch[1];
   } else {
     text = text
       .replace(/^\s*<COMPLETION>/i, '')
-      .replace(/<\/COMPLETION>\s*$/i, '');
+      .replace(/(?:\r?\n)?<\/COMPLETION>\s*$/i, '');
   }
 
   // 2. Strip Markdown code fences (e.g. ```ts\n...\n```)
@@ -498,21 +722,21 @@ export function postProcessCompletion(
     text = text.replace(/^\s*```[^\n]*\n?/, '').replace(/\n?```\s*$/, '');
   }
 
-  // When an assistant prefill `<COMPLETION>` is followed by an immediate newline from the model
-  // while the user is mid-line (`const x = |`), trim a single leading newline if the next line continues the expression.
   const prefixLines = String(prefix).replace(/\r\n/g, '\n').split('\n');
   const currentLinePrefix = prefixLines[prefixLines.length - 1] || '';
-  if (
-    currentLinePrefix.trim().length > 0 &&
-    !currentLinePrefix.trim().endsWith('{') &&
-    !currentLinePrefix.trim().endsWith(':') &&
-    text.startsWith('\n') &&
-    !text.startsWith('\n\n')
-  ) {
-    const withoutNewline = text.slice(1);
-    if (withoutNewline.trim().length > 0 && !/^\s+/.test(withoutNewline)) {
-      text = withoutNewline;
+
+  // Normalize leading blank lines (e.g. `\n    \n    def step` -> `\n\n    def step`)
+  text = text.replace(/^(?:[ \t]*\n)+/, (match) => {
+    const newlineCount = (match.match(/\n/g) || []).length;
+    if (newlineCount >= 2 && currentLinePrefix.trim().length > 0) {
+      return '\n\n';
     }
+    return '\n';
+  });
+
+  // Trim a single leading newline before prefix-overlap deduplication
+  if (text.startsWith('\n') && !text.startsWith('\n\n')) {
+    text = text.slice(1);
   }
 
   // 3. Remove Prefix Overlap
@@ -520,7 +744,7 @@ export function postProcessCompletion(
   if (currentLinePrefix.length > 0) {
     if (text.startsWith(currentLinePrefix)) {
       text = text.slice(currentLinePrefix.length);
-    } else {
+    } else if (currentLinePrefix.trim().length > 0) {
       const trimmedCurrentPrefix = currentLinePrefix.trimStart();
       if (trimmedCurrentPrefix.length > 0 && text.startsWith(trimmedCurrentPrefix)) {
         text = text.slice(trimmedCurrentPrefix.length);
@@ -549,9 +773,44 @@ export function postProcessCompletion(
     }
   }
 
+  // 3c. When cursor is at the end of a non-empty line (`currentLinePrefix.trim().length > 0`)
+  // and the completion is a next-line statement (starts with spaces/tab, or follows a comment / block header / return),
+  // ensure it begins with `\n` so Monaco renders it on the next line rather than gluing it onto the current line.
+  const trimmedLinePrefix = currentLinePrefix.trim();
+  if (trimmedLinePrefix.length > 0 && !isSingleLine && !text.startsWith('\n') && text.trim().length > 0) {
+    const isCommentLine =
+      trimmedLinePrefix.startsWith('#') || trimmedLinePrefix.startsWith('//');
+    const startsWithNextLineIndent = /^(?:  +|\t+)/.test(text);
+    const isBlockHeaderNextLine =
+      (trimmedLinePrefix.endsWith(':') || trimmedLinePrefix.endsWith('{')) &&
+      hadLeadingNewlineInTag;
+    const isBlockTerminatorNextLine =
+      /^(return|break|continue|raise|pass)\b/.test(trimmedLinePrefix) &&
+      hadLeadingNewlineInTag;
+
+    if (
+      isCommentLine ||
+      startsWithNextLineIndent ||
+      isBlockHeaderNextLine ||
+      isBlockTerminatorNextLine
+    ) {
+      text = `\n${text}`;
+    }
+  }
+
+  // 3d. Normalize indentation for whitespace-only lines, block headers, and dedented methods
+  text = normalizeCompletionIndentation(text, {
+    prefix,
+    currentLinePrefix,
+    isSingleLine,
+    hadLeadingNewlineInTag,
+    languageId,
+  });
+
   // 4. Enforce single-line constraint when requested
   if (isSingleLine && text.includes('\n')) {
-    text = text.split('\n')[0];
+    const firstNonEmpty = text.split('\n').find((line) => line.trim().length > 0) || '';
+    text = firstNonEmpty;
   }
 
   // 5. Remove Suffix Overlap
@@ -625,19 +884,45 @@ async function performHttpRequest({ url, headers, body, signal, environment, fet
         : null;
 
   if (effectiveFetch) {
-    const response = await effectiveFetch(url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body),
-      signal,
-    });
-    if (!response.ok) {
-      const errorBody = await response.text().catch(() => '');
-      throw new Error(
-        `Completion endpoint returned HTTP ${response.status}: ${errorBody.slice(0, 240)}`,
-      );
+    const timeoutController = new AbortController();
+    const timeoutId = setTimeout(() => timeoutController.abort(), 12000);
+    const onParentAbort = () => timeoutController.abort();
+    signal?.addEventListener?.('abort', onParentAbort, { once: true });
+    const combinedSignal = signal ? timeoutController.signal : timeoutController.signal;
+
+    try {
+      let response = await effectiveFetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+        signal: combinedSignal,
+      });
+      if (
+        !response.ok &&
+        response.status === 400 &&
+        body &&
+        typeof body === 'object' &&
+        'thinking' in body
+      ) {
+        const { thinking: _omitted, ...fallbackBody } = body;
+        response = await effectiveFetch(url, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(fallbackBody),
+          signal: combinedSignal,
+        });
+      }
+      if (!response.ok) {
+        const errorBody = await response.text().catch(() => '');
+        throw new Error(
+          `Completion endpoint returned HTTP ${response.status}: ${errorBody.slice(0, 240)}`,
+        );
+      }
+      return await response.json();
+    } finally {
+      clearTimeout(timeoutId);
+      signal?.removeEventListener?.('abort', onParentAbort);
     }
-    return await response.json();
   }
 
   if (environment?.host?.call) {
@@ -698,6 +983,7 @@ export class CodeCompletionEngine {
       model: this.config.model,
       baseUrl: this.config.baseUrl,
       triggerMode: this.config.triggerMode,
+      manualShortcut: this.config.manualShortcut,
       completionScope: this.config.completionScope,
       inFlightCount: this.activeControllers.size,
       metrics: { ...this.metrics },
@@ -746,6 +1032,16 @@ export class CodeCompletionEngine {
     const prefix = String(params.prefix ?? '');
     const suffix = String(params.suffix ?? '');
     const requestId = String(params.requestId || `req-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`);
+
+    // 0. Check manual trigger mode
+    if (!params.manual && effectiveConfig.triggerMode === 'manual') {
+      this.metrics.filteredRequests += 1;
+      return {
+        items: [],
+        requestId,
+        skippedReason: 'manual-trigger-only',
+      };
+    }
 
     // 1. Privacy Guard: check ignored globs
     if (isPrivacyIgnoredFile(filePath, effectiveConfig.ignoredGlobs)) {
@@ -835,6 +1131,7 @@ export class CodeCompletionEngine {
         prefix,
         suffix,
         isSingleLine: dynamicScope.isSingleLine,
+        languageId,
       });
 
       this.metrics.completedRequests += 1;

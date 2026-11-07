@@ -849,6 +849,8 @@ export interface LocalMcpServer {
   global: boolean;
   /** Agent config files currently carrying this server. */
   apps: McpAppType[];
+  /** Discovered or declared MCP tool names for this server. */
+  tools?: string[];
 }
 
 export interface McpMarketplaceProvider {
@@ -873,6 +875,8 @@ export interface McpMarketplaceItem {
   downloads: number | null;
   score: number | null;
   is_deployed: boolean | null;
+  category?: string | null;
+  kind?: string | null;
 }
 
 export interface McpMarketplaceInstallParameter {
@@ -913,6 +917,8 @@ export interface McpMarketplaceServerDetail {
   downloads: number | null;
   score: number | null;
   is_deployed: boolean | null;
+  category?: string | null;
+  kind?: string | null;
   default_option_id: string | null;
   install_options: McpMarketplaceInstallOption[];
   spec: Record<string, JsonValue>;
@@ -926,13 +932,15 @@ export const mcpMarketApi = {
     return backendCall<McpMarketplaceProvider[]>('mcp_list_marketplaces');
   },
   search: async (params: {
-    providerId: string;
+    providerId?: string | null;
     query?: string | null;
+    category?: string | null;
     limit?: number | null;
   }): Promise<McpMarketplaceItem[]> => {
     return backendCall<McpMarketplaceItem[]>('mcp_search_marketplace', {
-      providerId: params.providerId,
+      providerId: params.providerId ?? 'connector_catalog',
       query: params.query ?? null,
+      ...(params.category !== undefined ? { category: params.category } : {}),
       limit: params.limit ?? null,
     });
   },

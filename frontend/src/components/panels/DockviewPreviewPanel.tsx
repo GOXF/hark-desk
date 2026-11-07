@@ -1356,6 +1356,7 @@ function DockviewPreviewPanel(props: IDockviewPanelProps) {
         ) : (
           <Editor
             key={resolvedFilePath ?? filePath}
+            path={resolvedFilePath ?? filePath}
             value={editorContent}
             onChange={(value) => {
               if (resolvedFilePath && value !== undefined) {
@@ -1389,7 +1390,9 @@ function DockviewPreviewPanel(props: IDockviewPanelProps) {
               wordWrap: 'on',
               scrollBeyondLastLine: false,
               automaticLayout: true,
-              tabSize: 2,
+              tabSize: language === 'python' || language === 'rust' ? 4 : 2,
+              detectIndentation: true,
+              insertSpaces: true,
               renderWhitespace: 'selection',
               bracketPairColorization: { enabled: true },
               inlineSuggest: { enabled: true },

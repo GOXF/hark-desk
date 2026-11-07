@@ -23,7 +23,10 @@ import {
 import appPlugin, {
   applyWithUndoStopBarrier,
   computeAdaptiveDebounceMs,
+  doesEventMatchShortcut,
   ForwardTypingCache,
+  parseShortcutDescriptor,
+  resolveInlineCompletionRangeAndText,
 } from '../app/main.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -34,8 +37,15 @@ test('plugin manifest, README summary, and config.json conform to v4 / API 2.0 s
     await readFile(join(pluginRoot, '.vibex-plugin/plugin.json'), 'utf8'),
   );
   assert.equal(manifest.id, 'vibex.code-completion');
+  assert.equal(manifest.name, 'AI代码补全');
   assert.equal(manifest.manifestVersion, 4);
   assert.equal(manifest.apiVersion, '2.0');
+  assert.deepEqual(manifest.engines, {
+    vibex: '>=0.1.3 <1.0.0',
+    pluginSdk: '^2.0.0',
+  });
+  assert.equal(manifest.interface?.icon, 'assets/icon.svg');
+  assert.equal('permissions' in manifest, false);
   assert.equal(manifest.entrypoints.worker.path, 'dist/worker.mjs');
   assert.equal(manifest.entrypoints.app.entry, 'app/main.js');
   assert.equal(manifest.entrypoints.app.protocol, '2.0');
@@ -44,6 +54,11 @@ test('plugin manifest, README summary, and config.json conform to v4 / API 2.0 s
   assert.ok(statusItem);
   assert.equal(statusItem.slot, 'status.after-mcp');
   assert.equal(statusItem.handler, 'completion.status');
+  assert.equal(statusItem.title, 'AI代码补全');
+
+  const iconSvg = await readFile(join(pluginRoot, 'assets/icon.svg'), 'utf8');
+  assert.match(iconSvg, /viewBox="0 0 36 36"/);
+  assert.match(iconSvg, /linearGradient id="cc_bg"/);
 
   const config = JSON.parse(
     await readFile(join(pluginRoot, 'config.json'), 'utf8'),
@@ -416,3 +431,349 @@ test('app entrypoint supports adaptive debounce, forward-typing prefix cache, an
 
   instance.dispose();
 });
+
+test('handles comment + Enter newline framing in Python files and late vibex.code-editor registration', async () => {
+  assert.equal(
+    postProcessCompletion('<COMPLETION>\nimport pygame\nimport random\n</COMPLETION>', {
+      prefix: '//贪吃蛇游戏\n',
+      suffix: '',
+      isSingleLine: false,
+    }),
+    'import pygame\nimport random',
+  );
+  assert.equal(
+    postProcessCompletion('\nimport pygame\nimport random', {
+      prefix: '# 贪吃蛇游戏\n',
+      suffix: '',
+      isSingleLine: false,
+    }),
+    'import pygame\nimport random',
+  );
+
+  let registeredProvider = null;
+  let changeListener = null;
+  let cancelCalls = 0;
+
+  const instance = await appPlugin.activate({
+    services: {
+      get() {
+        return null;
+      },
+      onChange(serviceId, cb) {
+        if (serviceId === 'vibex.code-editor') {
+          changeListener = cb;
+        }
+        return () => {};
+      },
+    },
+    async invokeWorker(method) {
+      if (method === 'completion.cancel') {
+        cancelCalls += 1;
+      }
+      return { items: [{ insertText: 'import pygame' }] };
+    },
+  });
+
+  assert.equal(registeredProvider, null);
+  assert.equal(typeof changeListener, 'function');
+
+  changeListener({
+    registerInlineCompletionProvider(_selector, provider) {
+      registeredProvider = provider;
+      return { dispose() {} };
+    },
+  });
+  assert.ok(registeredProvider);
+
+  // Cancelling when no worker request is in flight should not emit completion.cancel IPC
+  instance.cancelActiveCompletion();
+  assert.equal(cancelCalls, 0);
+
+  instance.dispose();
+});
+
+test('supports customizable manualShortcut and enforces triggerMode === manual', async () => {
+  assert.deepEqual(parseShortcutDescriptor('Alt+\\'), {
+    ctrl: false,
+    alt: true,
+    shift: false,
+    meta: false,
+    key: '\\',
+  });
+  assert.equal(
+    doesEventMatchShortcut(
+      { altKey: true, ctrlKey: false, shiftKey: false, metaKey: false, key: '\\', code: 'Backslash' },
+      'Alt+\\',
+    ),
+    true,
+  );
+  assert.equal(
+    doesEventMatchShortcut(
+      { altKey: true, ctrlKey: true, shiftKey: false, metaKey: false, key: ' ', code: 'Space' },
+      'Ctrl+Alt+Space',
+    ),
+    true,
+  );
+  assert.equal(
+    doesEventMatchShortcut(
+      { altKey: true, ctrlKey: false, shiftKey: false, metaKey: false, key: 'ˆ', code: 'KeyI' },
+      'Alt+I',
+    ),
+    true,
+  );
+
+  // Worker skips automatic requests when triggerMode === 'manual', but runs manual requests
+  const engine = new CodeCompletionEngine({
+    config: {
+      enabled: true,
+      triggerMode: 'manual',
+      manualShortcut: 'Alt+I',
+      apiKey: 'sk-test',
+    },
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      async json() {
+        return {
+          choices: [{ message: { content: '<COMPLETION>manualResult()</COMPLETION>' } }],
+        };
+      },
+    }),
+  });
+
+  const skippedAuto = await engine.complete({
+    filePath: 'src/app.py',
+    languageId: 'python',
+    prefix: 'def run():\n    ',
+    suffix: '',
+    manual: false,
+  });
+  assert.equal(skippedAuto.skippedReason, 'manual-trigger-only');
+  assert.equal(skippedAuto.items.length, 0);
+
+  const allowedManual = await engine.complete({
+    filePath: 'src/app.py',
+    languageId: 'python',
+    prefix: 'def run():\n    ',
+    suffix: '',
+    manual: true,
+  });
+  assert.equal(allowedManual.items.length, 1);
+  assert.equal(allowedManual.items[0].insertText, 'manualResult()');
+});
+
+test('supports completion at any code position (mid-code, function-name-first, and end-of-line next-line block)', () => {
+  // 1. Writing a function name first in the middle of code completes signature + body inline
+  const fnNameCompletion = postProcessCompletion(
+    '<COMPLETION>\n    def restart_game(self) -> None:\n        self.reset()\n</COMPLETION>',
+    {
+      prefix: 'class SnakeGame:\n    def restart_game',
+      suffix: '\n\n    def step(self) -> bool:',
+      isSingleLine: false,
+    },
+  );
+  assert.equal(fnNameCompletion, '(self) -> None:\n        self.reset()');
+
+  // 2. Cursor at the end of a non-empty statement line preserves leading `\n` for next-line indented block
+  const endOfLineNextBlock = postProcessCompletion(
+    '<COMPLETION>\n        if new_head in self.snake:\n            self.alive = False\n</COMPLETION>',
+    {
+      prefix: '        new_head = (head_x + dx, head_y + dy)',
+      suffix: '\n        self.snake.insert(0, new_head)',
+      isSingleLine: false,
+    },
+  );
+  assert.equal(
+    endOfLineNextBlock,
+    '\n        if new_head in self.snake:\n            self.alive = False',
+  );
+
+  // 3. Multi-line completion when closing delimiters exist on current line adjusts range.endColumn for Monaco
+  const normalizedMidLine = resolveInlineCompletionRangeAndText(
+    'self, direction: tuple[int, int]):\n        self.direction = direction',
+    {
+      lineNumber: 12,
+      column: 18,
+      linePrefix: '    def set_dir(',
+      lineSuffix: '):',
+    },
+  );
+  assert.equal(normalizedMidLine.range.startColumn, 18);
+  assert.equal(normalizedMidLine.range.endColumn, 20);
+  assert.equal(
+    normalizedMidLine.insertText,
+    'self, direction: tuple[int, int]):\n        self.direction = direction',
+  );
+});
+
+test('disables thinking on reasoning-capable OpenAI-compatible models (e.g. deepseek-flash) and retries without thinking on HTTP 400', async () => {
+  const fimContext = buildFimContext({
+    filePath: 'test.py',
+    languageId: 'python',
+    prefix: '# 贪吃蛇游戏\ndef ',
+    suffix: '\n',
+  });
+  const dynamicScope = resolveDynamicScope({
+    prefix: '# 贪吃蛇游戏\ndef ',
+    suffix: '\n',
+    completionScope: 'smart',
+    maxTokens: 256,
+  });
+
+  const deepseekReq = buildProtocolHttpRequest({
+    config: {
+      providerProtocol: 'openai-compatible',
+      baseUrl: 'https://api.deepseek.com',
+      apiKey: 'sk-test',
+      model: 'deepseek-flash',
+    },
+    fimContext,
+    dynamicScope,
+  });
+  assert.deepEqual(deepseekReq.body.thinking, { type: 'disabled' });
+  assert.equal(deepseekReq.body.max_tokens, 160);
+
+  let attempt = 0;
+  const bodies = [];
+  const engine = new CodeCompletionEngine({
+    config: {
+      enabled: true,
+      providerProtocol: 'openai-compatible',
+      baseUrl: 'https://api.deepseek.com',
+      apiKey: 'sk-test',
+      model: 'deepseek-flash',
+    },
+    fetchImpl: async (_url, init) => {
+      attempt += 1;
+      bodies.push(JSON.parse(init.body));
+      if (attempt === 1) {
+        return {
+          ok: false,
+          status: 400,
+          async text() {
+            return 'unknown field thinking';
+          },
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return {
+            choices: [
+              {
+                message: {
+                  content: '<COMPLETION>move_snake(snake, direction):\n    return snake</COMPLETION>',
+                },
+              },
+            ],
+          };
+        },
+      };
+    },
+  });
+
+  const result = await engine.complete({
+    filePath: 'test.py',
+    languageId: 'python',
+    prefix: '# 贪吃蛇游戏\ndef ',
+    suffix: '\n',
+    manual: true,
+  });
+  assert.equal(attempt, 2);
+  assert.deepEqual(bodies[0].thinking, { type: 'disabled' });
+  assert.equal('thinking' in bodies[1], false);
+  assert.equal(result.items.length, 1);
+  assert.equal(result.items[0].insertText, 'move_snake(snake, direction):\n    return snake');
+});
+
+test('normalizes indentation for dedented methods on indented blank lines, relative multi-line blocks, and after return statements', () => {
+  const snakePrefixToReturn = [
+    'import random',
+    '',
+    'class SnakeGame:',
+    '    def __init__(self, width: int = 20, height: int = 20) -> None:',
+    '        self.width = width',
+    '        self.height = height',
+    '        self.snake = [(width // 2, height // 2)]',
+    '',
+    '    def _spawn_food(self) -> tuple[int, int]:',
+    '        while True:',
+    '            pos = (random.randint(0, self.width - 1), random.randint(0, self.height - 1))',
+    '            if pos not in self.snake:',
+    '                return pos',
+  ].join('\n');
+
+  // 1. Dynamic scope in multi-line smart mode must NOT include `\n\n` in stopSequences so methods after `return pos` are not truncated
+  const scopeAfterReturn = resolveDynamicScope({
+    prefix: snakePrefixToReturn,
+    suffix: '',
+    completionScope: 'smart',
+    maxTokens: 256,
+  });
+  assert.equal(scopeAfterReturn.isSingleLine, false);
+  assert.equal(scopeAfterReturn.stopSequences.includes('\n\n'), false);
+
+  // 2. Cursor at end of `return pos` (16 spaces): model outputs `\n\n    def step(self) -> bool:` -> preserves `\n\n` and 4-space class method indent
+  const afterReturnMethod = postProcessCompletion(
+    '<COMPLETION>\n\n    def step(self) -> bool:\n        head_x, head_y = self.snake[0]\n        return True\n</COMPLETION>',
+    {
+      prefix: snakePrefixToReturn,
+      suffix: '',
+      isSingleLine: false,
+      languageId: 'python',
+    },
+  );
+  assert.equal(
+    afterReturnMethod,
+    '\n\n    def step(self) -> bool:\n        head_x, head_y = self.snake[0]\n        return True',
+  );
+
+  // 3. Cursor at end of `return pos` (16 spaces): if model mistakenly indents `def step` at 16 spaces, re-aligns it to 4 spaces
+  const overIndentedMethodAfterReturn = postProcessCompletion(
+    '<COMPLETION>\n                def step(self) -> bool:\n                    return True\n</COMPLETION>',
+    {
+      prefix: snakePrefixToReturn,
+      suffix: '',
+      isSingleLine: false,
+      languageId: 'python',
+    },
+  );
+  assert.equal(
+    overIndentedMethodAfterReturn,
+    '\n    def step(self) -> bool:\n        return True',
+  );
+
+  // 4. Cursor on a 16-space blank line (`                ` after pressing Enter after `return pos`):
+  //    Model outputs `    def step(self):` (4 spaces < 16 spaces). Must prepend `\n` instead of gluing onto 16 spaces (20 spaces).
+  const onIndentedBlankLineDedented = postProcessCompletion(
+    '<COMPLETION>\n    def step(self) -> bool:\n        return True\n</COMPLETION>',
+    {
+      prefix: `${snakePrefixToReturn}\n                `,
+      suffix: '',
+      isSingleLine: false,
+      languageId: 'python',
+    },
+  );
+  assert.equal(
+    onIndentedBlankLineDedented,
+    '\n    def step(self) -> bool:\n        return True',
+  );
+
+  // 5. Cursor on an 8-space blank line (`        `) where model outputs line 1 at 0 spaces (`while True:`)
+  //    and lines 2+ with relative indentation (`    pos = ...`): pads lines 2+ by 8 spaces to 12/16 spaces.
+  const relativeMultiLine = postProcessCompletion(
+    '<COMPLETION>while True:\n    pos = (0, 0)\n    if pos not in self.snake:\n        return pos</COMPLETION>',
+    {
+      prefix: 'class SnakeGame:\n    def _spawn_food(self):\n        ',
+      suffix: '',
+      isSingleLine: false,
+      languageId: 'python',
+    },
+  );
+  assert.equal(
+    relativeMultiLine,
+    'while True:\n            pos = (0, 0)\n            if pos not in self.snake:\n                return pos',
+  );
+});
+

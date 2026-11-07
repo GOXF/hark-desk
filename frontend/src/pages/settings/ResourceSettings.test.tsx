@@ -5,6 +5,10 @@ import { HotkeysProvider } from 'react-hotkeys-hook';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import {
+  StatusBarConnectorButton,
+  dispatchOpenConnectorMarketplace,
+} from '@/components/connectors/ConnectorMarketplace';
 import { InstructionsSettings } from './InstructionsSettings';
 import { McpSettings } from './McpSettings';
 import { SkillsSettings } from './SkillsSettings';
@@ -199,6 +203,7 @@ describe('McpSettings', () => {
     mocks.upsertMcp.mockResolvedValue([created]);
     renderSettings(<McpSettings />);
 
+    await user.click(screen.getByRole('radio', { name: '本地 MCP' }));
     await user.click(await screen.findByRole('button', { name: '新建 MCP' }));
     await user.type(
       screen.getByPlaceholderText('例如 filesystem'),
@@ -258,7 +263,7 @@ describe('McpSettings', () => {
     });
   });
 
-  it('renders local MCP and MCP marketplace list items with auto-height button classes to prevent row overlap', async () => {
+  it('renders Connectors header, SegmentedControl, local MCP list items, and full-width ConnectorMarketplace', async () => {
     const user = userEvent.setup();
     mocks.scanMcp.mockResolvedValue([
       {
@@ -288,15 +293,217 @@ describe('McpSettings', () => {
 
     renderSettings(<McpSettings />);
 
-    const localItem = await screen.findByRole('button', { name: /node_repl/ });
-    expect(localItem).toHaveClass('!my-0', '!h-auto', '!min-h-0');
+    expect(
+      await screen.findByRole('heading', { name: '连接器' })
+    ).toBeVisible();
 
-    await user.click(screen.getByRole('button', { name: 'MCP 市场' }));
+    const localTabRadio = screen.getByRole('radio', { name: '本地 MCP' });
+    const marketTabRadio = screen.getByRole('radio', { name: 'MCP 市场' });
+    expect(localTabRadio.querySelector('svg')).not.toBeNull();
+    expect(marketTabRadio.querySelector('svg')).not.toBeNull();
+    expect(marketTabRadio).toBeChecked();
+
+    const searchInput = await screen.findByPlaceholderText('搜索应用');
+    expect(searchInput).toBeVisible();
+    const marketContainer = searchInput.closest('.dsh-connector-marketplace');
+    expect(marketContainer?.parentElement).not.toHaveClass(
+      'rounded-xl',
+      'border',
+      'bg-card'
+    );
+    expect(
+      screen.getByRole('button', { name: 'MCP 服务器' })
+    ).toBeVisible();
+    expect(screen.getByRole('button', { name: '开发者工具' })).toBeVisible();
+    expect(screen.getByRole('button', { name: '分析' })).toBeVisible();
+    expect(
+      screen.getByRole('button', { name: 'model context protocol' })
+    ).toBeVisible();
 
     const marketItem = await screen.findByRole('button', {
       name: /GitHub MCP/,
     });
     expect(marketItem).toHaveClass('!my-0', '!h-auto', '!min-h-0');
+
+    // Verify Composio and Aiwyn Tax MCP are not hardcoded as 'included' (show Connect button instead)
+    expect(
+      screen.getByRole('button', { name: '连接 Composio' })
+    ).toBeVisible();
+    expect(
+      screen.getByRole('button', { name: '连接 Aiwyn Tax MCP' })
+    ).toBeVisible();
+    expect(screen.queryByText('已包含')).not.toBeInTheDocument();
+
+    // Verify root container has min-h-0 flex-1 overflow-hidden w-full and browse-all button works
+    expect(marketContainer).toHaveClass(
+      'min-h-0',
+      'flex-1',
+      'overflow-hidden',
+      'w-full'
+    );
+    const browseAllBtn = screen.getByRole('button', {
+      name: /浏览全部连接器/,
+    });
+    expect(browseAllBtn).toBeVisible();
+    await user.click(browseAllBtn);
+    // In ungrouped browse-all view, items beyond the first 4 of developer_tools (e.g. Sentry, Vercel) are visible
+    expect(screen.getByRole('button', { name: '连接 Sentry' })).toBeVisible();
+    expect(screen.getByRole('button', { name: '连接 Vercel' })).toBeVisible();
+
+    await user.click(localTabRadio);
+
+    const localItem = await screen.findByRole('button', { name: /node_repl/ });
+    expect(localItem).toHaveClass('!my-0', '!h-auto', '!min-h-0');
+  });
+
+  it('opens the centered ConnectorMarketplace dialog from StatusBarConnectorButton and supports custom MCP creation', async () => {
+    const user = userEvent.setup();
+    mocks.scanMcp.mockResolvedValue([]);
+    mocks.searchMcp.mockResolvedValue([]);
+    mocks.upsertMcp.mockResolvedValue([
+      {
+        id: 'custom-mcp',
+        spec: {
+          type: 'stdio',
+          command: 'npx',
+          args: ['-y', '@modelcontextprotocol/server-filesystem', '/path'],
+        },
+        global: true,
+        apps: [],
+      },
+    ]);
+
+    renderSettings(<StatusBarConnectorButton />);
+
+    const triggerBtn = screen.getByRole('button', { name: '连接器市场' });
+    expect(triggerBtn).toHaveClass('h-4', 'w-4', 'opacity-80');
+    const storeSvg = triggerBtn.querySelector('svg');
+    expect(storeSvg).toHaveClass('h-3', 'w-3');
+    expect(storeSvg).toHaveAttribute('stroke-width', '1.6');
+
+    await user.click(triggerBtn);
+
+    expect(
+      await screen.findByText(
+        '只需连接一次应用或你自己的 MCP 服务器，再选择哪些机器人可以使用。'
+      )
+    ).toBeVisible();
+    expect(screen.getAllByRole('button', { name: '关闭' })).toHaveLength(1);
+
+    await user.click(screen.getByRole('button', { name: 'MCP 服务器' }));
+    await user.type(
+      await screen.findByPlaceholderText('例如 filesystem'),
+      'custom-mcp'
+    );
+    await user.click(screen.getByRole('button', { name: '新建' }));
+
+    await waitFor(() => {
+      expect(mocks.upsertMcp).toHaveBeenCalledWith(
+        expect.objectContaining({
+          serverId: 'custom-mcp',
+          global: true,
+          apps: [],
+        })
+      );
+    });
+
+    dispatchOpenConnectorMarketplace({ searchQuery: 'Supabase' });
+    expect(await screen.findByDisplayValue('Supabase')).toBeVisible();
+  });
+
+  it('parses URL, CLI command, and mcpServers JSON for custom MCP server input', async () => {
+    const { parseCustomMcpInput } = await import(
+      '@/components/connectors/ConnectorMarketplace'
+    );
+
+    // 1. Remote HTTP & SSE URLs
+    expect(parseCustomMcpInput('https://mcp.linear.app/mcp')).toEqual({
+      serverId: 'linear',
+      spec: {
+        type: 'http',
+        url: 'https://mcp.linear.app/mcp',
+      },
+    });
+    expect(parseCustomMcpInput('https://mcp.asana.com/sse')).toEqual({
+      serverId: 'asana',
+      spec: {
+        type: 'sse',
+        url: 'https://mcp.asana.com/sse',
+      },
+    });
+
+    // 2. Direct CLI command (npx) & `claude mcp add` command
+    expect(
+      parseCustomMcpInput(
+        'npx -y @modelcontextprotocol/server-postgres postgresql://localhost/mydb'
+      )
+    ).toEqual({
+      serverId: 'postgres',
+      spec: {
+        type: 'stdio',
+        command: 'npx',
+        args: [
+          '-y',
+          '@modelcontextprotocol/server-postgres',
+          'postgresql://localhost/mydb',
+        ],
+      },
+    });
+
+    expect(
+      parseCustomMcpInput(
+        'claude mcp add --transport stdio -e API_KEY=secret twitter-mcp -- npx -y @enescinar/twitter-mcp'
+      )
+    ).toEqual({
+      serverId: 'twitter-mcp',
+      spec: {
+        type: 'stdio',
+        command: 'npx',
+        args: ['-y', '@enescinar/twitter-mcp'],
+        env: { API_KEY: 'secret' },
+      },
+    });
+
+    // 3. Full `mcpServers` and VS Code `servers` JSON config blocks
+    expect(
+      parseCustomMcpInput(
+        JSON.stringify({
+          mcpServers: {
+            'my-custom-server': {
+              command: 'uvx',
+              args: ['mcp-server-git'],
+            },
+          },
+        })
+      )
+    ).toEqual({
+      serverId: 'my-custom-server',
+      spec: {
+        type: 'stdio',
+        command: 'uvx',
+        args: ['mcp-server-git'],
+      },
+    });
+
+    expect(
+      parseCustomMcpInput(
+        JSON.stringify({
+          servers: {
+            'vscode-server': {
+              command: 'npx',
+              args: ['-y', '@modelcontextprotocol/server-memory'],
+            },
+          },
+        })
+      )
+    ).toEqual({
+      serverId: 'vscode-server',
+      spec: {
+        type: 'stdio',
+        command: 'npx',
+        args: ['-y', '@modelcontextprotocol/server-memory'],
+      },
+    });
   });
 });
 
@@ -390,6 +597,7 @@ describe('SkillsSettings', () => {
     mocks.uninstallSkill.mockResolvedValue([]);
     renderSettings(<SkillsSettings />);
 
+    await user.click(screen.getByRole('radio', { name: '本地 Skill' }));
     await user.click(
       await screen.findByRole('button', { name: /review-code/ })
     );
@@ -415,4 +623,126 @@ describe('SkillsSettings', () => {
       'changing an uncontrolled input to be controlled'
     );
   });
+
+  it('renders the full-width Skills Leaderboard and opens the two-column SKILL.md detail view with inline installation', async () => {
+    const user = userEvent.setup();
+    mocks.searchSkills.mockResolvedValue([
+      {
+        id: 'vercel-labs/skills/find-skills',
+        skill_id: 'find-skills',
+        name: 'find-skills',
+        installs: 749500,
+        source: 'vercel-labs/skills',
+        weekly_installs: [120, 180, 240, 310, 420, 510, 630, 750],
+        is_official: true,
+      },
+    ]);
+    mocks.detailSkill.mockResolvedValue({
+      description: 'Fallback description',
+      content: '---\nname: find-skills\n---\n# Find Skills Guide\n\nDiscover and install skills easily.',
+    });
+    mocks.installSkill.mockResolvedValue([
+      {
+        id: 'find-skills',
+        name: 'find-skills',
+        description: 'Discover and install skills easily.',
+        group: 'find',
+        global: true,
+        apps: [],
+        path: '/tmp/find-skills/SKILL.md',
+      },
+    ]);
+    mocks.readSkill.mockResolvedValue({
+      id: 'find-skills',
+      path: '/tmp/find-skills/SKILL.md',
+      content: '# Find Skills Guide',
+    });
+
+    renderSettings(<SkillsSettings />);
+
+    expect(
+      screen.getByRole('heading', { name: 'Skill' })
+    ).toBeVisible();
+    expect(screen.getByRole('radio', { name: 'Skill 市场' })).toBeChecked();
+
+    expect(
+      await screen.findByPlaceholderText('Search skills...')
+    ).toBeVisible();
+    expect(
+      screen.queryByRole('heading', { name: 'SKILLS LEADERBOARD' })
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText('来源：skills.sh')).not.toBeInTheDocument();
+    expect(screen.getByText('8W ACTIVITY')).toBeVisible();
+    expect(screen.getByText('749.5K')).toBeVisible();
+    expect(screen.getByText('/')).toBeVisible();
+
+    const allTimeTab = screen.getByRole('tab', { name: /All Time/ });
+    expect(allTimeTab).toHaveClass('!rounded-none');
+
+    const trendingTab = screen.getByRole('tab', { name: 'Trending (24h)' });
+    expect(trendingTab).toHaveClass('!rounded-none');
+    await user.click(trendingTab);
+    await waitFor(() => {
+      expect(mocks.searchSkills).toHaveBeenCalledWith('', 'trending');
+    });
+
+    await user.click(screen.getByText('find-skills'));
+
+    expect(
+      await screen.findByRole('heading', { name: 'Find Skills Guide' })
+    ).toBeVisible();
+    expect(screen.getByRole('button', { name: '返回列表' })).toBeVisible();
+    expect(screen.queryByText('SKILL.md')).not.toBeInTheDocument();
+
+    const sourceLink = screen.getByRole('link', { name: /vercel-labs\/skills/ });
+    const installsBadge = screen.getByText(/749\.5K INSTALLS/);
+    expect(sourceLink.parentElement).toBe(installsBadge.parentElement);
+    expect(
+      sourceLink.compareDocumentPosition(installsBadge) &
+        Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+
+    expect(
+      screen.getByText('npx skills add vercel-labs/skills --skill find-skills')
+    ).toBeVisible();
+
+    // Short SKILL.md content does not overflow page height -> Show More is hidden
+    expect(
+      screen.queryByRole('button', { name: 'Show More' })
+    ).not.toBeInTheDocument();
+
+    // Return to list and open a skill with long SKILL.md content (>24 lines) -> Show More appears
+    const longContent = [
+      '---',
+      'name: find-skills',
+      '---',
+      '# Find Skills Guide',
+      ...Array.from({ length: 30 }, (_, idx) => `- Step ${idx + 1}: Detailed instruction line`),
+    ].join('\n');
+    mocks.detailSkill.mockResolvedValueOnce({
+      description: 'Fallback description',
+      content: longContent,
+    });
+
+    await user.click(screen.getByRole('button', { name: '返回列表' }));
+    await user.click(await screen.findByText('find-skills'));
+
+    const showMoreBtn = await screen.findByRole('button', { name: 'Show More' });
+    expect(showMoreBtn).toBeVisible();
+    await user.click(showMoreBtn);
+    expect(screen.getByRole('button', { name: 'Show Less' })).toBeVisible();
+
+    await user.click(screen.getByRole('button', { name: '安装' }));
+    await waitFor(() => {
+      expect(mocks.installSkill).toHaveBeenCalledWith({
+        source: 'vercel-labs/skills',
+        skillId: 'find-skills',
+        global: true,
+        apps: [],
+        link: false,
+      });
+    });
+  });
 });
+
+

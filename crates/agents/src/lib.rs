@@ -55,6 +55,9 @@ pub mod metadata;
 pub mod native_config;
 mod native_steering;
 pub mod npm_registry;
+mod omp_auth;
+mod omp_mcp;
+pub mod omp_providers;
 pub mod operations;
 pub mod parsers;
 pub mod permissions;
@@ -124,10 +127,10 @@ pub use auth_status::{
 pub use capability::AcpCapabilityNormalizer;
 pub use cli_exposure::{
     CliExposureError, PublishedCliCommand, ShellFamily, ensure_user_cli_path,
-    export_managed_node_to_user_environment, publish_managed_runtime_cli,
-    publish_user_toolchain_commands, published_cli_shim_agent, published_cli_shim_target,
-    remove_managed_runtime_cli, remove_orphaned_cli_shims, resolve_user_runtime_command,
-    resolve_user_runtime_commands, switch_managed_runtime_cli,
+    export_managed_bun_to_user_environment, export_managed_node_to_user_environment,
+    publish_managed_runtime_cli, publish_user_toolchain_commands, published_cli_shim_agent,
+    published_cli_shim_target, remove_managed_runtime_cli, remove_orphaned_cli_shims,
+    resolve_user_runtime_command, resolve_user_runtime_commands, switch_managed_runtime_cli,
 };
 pub use codex_auth::{
     CODEX_AUTH_MODES, CodexAuthModeProjection, apply_codex_auth_mode, project_codex_auth_mode,
@@ -236,9 +239,11 @@ pub use lifecycle::{
 };
 pub use local_detection::{npm_package_name, version_at_least};
 pub use managed_toolchain::{
-    MANAGED_NODE_VERSION, MANAGED_UV_VERSION, ManagedNodeArtifact, ManagedUvArtifact,
-    managed_node_archive_name, managed_node_artifact, managed_node_download_urls,
-    managed_uv_artifact, node_verified_for_install, uv_verified_for_install,
+    MANAGED_BUN_VERSION, MANAGED_NODE_VERSION, MANAGED_UV_VERSION, ManagedBunArtifact,
+    ManagedNodeArtifact, ManagedUvArtifact, bun_verified_for_install, managed_bun_archive_name,
+    managed_bun_artifact, managed_bun_download_urls, managed_node_archive_name,
+    managed_node_artifact, managed_node_download_urls, managed_uv_artifact,
+    node_verified_for_install, uv_verified_for_install,
 };
 pub use management_boundary::{
     BoundaryError, Clock, InstallInvocation, InstallOutput, InstallRunner, NativeFileMetadata,
@@ -272,6 +277,10 @@ pub use npm_registry::{
     overlay_npx_latest_from_npm, overlay_npx_latest_versions,
     plan_runtime_acp_compatibility_warning, runtime_acp_compatibility_warning, split_npm_spec,
     verify_external_component_change, verify_npm_component_file,
+};
+pub use omp_auth::{
+    OmpCredentialPresence, agent_dir as omp_agent_dir,
+    credential_presence as omp_credential_presence,
 };
 pub use operations::{InstallOperationError, InstallOrchestrator, OrchestratorAgentSnapshot};
 pub use permissions::{

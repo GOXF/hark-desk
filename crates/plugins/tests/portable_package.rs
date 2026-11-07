@@ -1187,12 +1187,12 @@ fn monorepo_official_v2_plugins_in_plugins_dir_are_valid() {
         ("office", "vibex.office"),
         ("workflow-creator", "vibex.workflow-creator"),
         ("remote-ssh", "vibex.remote-ssh"),
-        ("open-connector", "vibex.open-connector"),
         ("science", "vibex.science"),
         ("computer-use", "vibex-plugin-computer-use"),
         ("kanban-views", "vibex.kanban-views"),
         ("notes", "vibex.notes"),
         ("prompt-enhancer", "vibex.prompt-enhancer"),
+        ("code-completion", "vibex.code-completion"),
     ] {
         let plugin_dir = repo_root.join("plugins").join(dir_name);
         let package = PluginPackage::inspect(&plugin_dir, PluginSourceKind::Snapshot)
@@ -1221,6 +1221,10 @@ async fn monorepo_plugins_bootstrap_offline_in_topological_order_and_cascade_dep
         .await
         .expect("offline bootstrap of all 13 monorepo plugins");
     assert_eq!(installed.len(), 13);
+    assert_eq!(
+        installed.len(),
+        plugins::discover_monorepo_plugin_roots().len()
+    );
 
     let opencode_catalog = control
         .list_provider_catalog("opencode")

@@ -14,14 +14,20 @@ use std::{
     fs,
     future::Future,
     path::{Path, PathBuf},
-    sync::LazyLock,
+    sync::{LazyLock, Mutex},
     time::Duration,
 };
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value, json};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
+mod catalog;
 mod error;
+pub use catalog::{
+    CONNECTOR_CATEGORIES, MARKETPLACE_BUILTIN, MARKETPLACE_CONNECTOR_CATALOG,
+    MARKETPLACE_OPEN_CONNECTOR, catalog_total_count, normalize_connector_category,
+};
 pub use error::McpError;
 
 const MARKETPLACE_SMITHERY: &str = "smithery";
@@ -102,9 +108,10 @@ pub enum McpAppType {
     CommandCode,
     #[serde(rename = "zcode", alias = "z_code")]
     ZCode,
+    Omp,
 }
 
-const ALL_APPS: [McpAppType; 19] = [
+const ALL_APPS: [McpAppType; 20] = [
     McpAppType::ClaudeCode,
     McpAppType::Codex,
     McpAppType::Antigravity,
@@ -123,13 +130,14 @@ const ALL_APPS: [McpAppType; 19] = [
     McpAppType::Trae,
     McpAppType::CommandCode,
     McpAppType::ZCode,
+    McpAppType::Omp,
     McpAppType::Pi,
 ];
 
 /// Targets that VibeX exposes for new MCP assignments. OpenClaw and Pi remain
 /// in `ALL_APPS` so legacy/extension entries can be scanned and removed, but
 /// are not offered for new global assignments.
-const ASSIGNABLE_APPS: [McpAppType; 17] = [
+const ASSIGNABLE_APPS: [McpAppType; 18] = [
     McpAppType::ClaudeCode,
     McpAppType::Codex,
     McpAppType::Antigravity,
@@ -147,6 +155,7 @@ const ASSIGNABLE_APPS: [McpAppType; 17] = [
     McpAppType::Trae,
     McpAppType::CommandCode,
     McpAppType::ZCode,
+    McpAppType::Omp,
 ];
 
 #[derive(Debug, Clone, Serialize)]
@@ -157,6 +166,9 @@ pub struct LocalMcpServer {
     pub global: bool,
     /// Which agent config files currently carry this server.
     pub apps: Vec<McpAppType>,
+    /// Discovered or cached MCP tool names exposed by this server.
+    #[serde(default)]
+    pub tools: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -183,6 +195,14 @@ pub struct McpMarketplaceItem {
     pub downloads: Option<u64>,
     pub score: Option<f64>,
     pub is_deployed: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_spec: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -226,6 +246,12 @@ pub struct McpMarketplaceServerDetail {
     pub downloads: Option<u64>,
     pub score: Option<f64>,
     pub is_deployed: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
     pub default_option_id: Option<String>,
     pub install_options: Vec<McpMarketplaceInstallOption>,
     pub spec: Value,
@@ -757,6 +783,23 @@ fn command_code_mcp_json_path() -> PathBuf {
 
 fn zcode_mcp_json_path() -> PathBuf {
     configured_dir("ZCODE_HOME", home_dir_or_default().join(".zcode")).join("mcp.json")
+}
+
+fn omp_mcp_json_path() -> PathBuf {
+    let environment = SAVED_AGENT_ENVIRONMENT
+        .try_with(|environment| {
+            environment
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    omp_mcp_json_path_in(&home_dir_or_default(), &environment)
+}
+
+fn omp_mcp_json_path_in(home: &Path, environment: &BTreeMap<String, String>) -> PathBuf {
+    // Same rule as launch: a process or saved dir that points at Pi is not OMP.
+    agents::omp_agent_dir(home, environment).join("mcp.json")
 }
 
 // ---------------------------------------------------------------------------
@@ -2862,6 +2905,51 @@ fn remove_qoder_server(id: &str) -> Result<bool, McpError> {
     remove_json_mcp_server_at(&qoder_settings_path(), id)
 }
 
+fn read_omp_servers_at(path: &Path) -> Result<BTreeMap<String, Value>, McpError> {
+    let root = read_json_file(path)?;
+    let mut out = BTreeMap::new();
+    let Some(servers) = root.get("mcpServers").and_then(Value::as_object) else {
+        return Ok(out);
+    };
+    for (id, spec) in servers {
+        if let Ok(normalized) = canonicalize_spec(spec, "OMP config") {
+            out.insert(id.clone(), normalized);
+        }
+    }
+    Ok(out)
+}
+
+fn read_omp_servers() -> Result<BTreeMap<String, Value>, McpError> {
+    read_omp_servers_at(&omp_mcp_json_path())
+}
+
+fn upsert_omp_server_at(path: &Path, id: &str, spec: &Value) -> Result<(), McpError> {
+    let mut root = read_json_file(path)?;
+    if !root.is_object() {
+        root = json!({});
+    }
+    let canonical = canonicalize_spec(spec, "OMP write")?;
+    let obj = root
+        .as_object_mut()
+        .ok_or_else(|| bad(format!("invalid JSON root in {}", path.display())))?;
+    if !obj.get("mcpServers").map(Value::is_object).unwrap_or(false) {
+        obj.insert("mcpServers".to_string(), Value::Object(Map::new()));
+    }
+    obj.get_mut("mcpServers")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| bad(format!("invalid mcpServers in {}", path.display())))?
+        .insert(id.to_string(), canonical);
+    write_json_file(path, &root)
+}
+
+fn upsert_omp_server(id: &str, spec: &Value) -> Result<(), McpError> {
+    upsert_omp_server_at(&omp_mcp_json_path(), id, spec)
+}
+
+fn remove_omp_server(id: &str) -> Result<bool, McpError> {
+    remove_json_mcp_server_at(&omp_mcp_json_path(), id)
+}
+
 fn read_grok_root_toml_at(path: &Path) -> Result<toml::Value, McpError> {
     if !path.exists() {
         return Ok(toml::Value::Table(toml::map::Map::new()));
@@ -3538,6 +3626,7 @@ fn upsert_server_for_app(app: McpAppType, id: &str, spec: &Value) -> Result<(), 
         McpAppType::Trae => upsert_trae_server(id, spec),
         McpAppType::CommandCode => upsert_command_code_server(id, spec),
         McpAppType::ZCode => upsert_zcode_server(id, spec),
+        McpAppType::Omp => upsert_omp_server(id, spec),
     }
 }
 
@@ -3562,6 +3651,7 @@ fn remove_server_for_app(app: McpAppType, id: &str) -> Result<bool, McpError> {
         McpAppType::Trae => remove_trae_server(id),
         McpAppType::CommandCode => remove_command_code_server(id),
         McpAppType::ZCode => remove_zcode_server(id),
+        McpAppType::Omp => remove_omp_server(id),
     }
 }
 
@@ -3586,12 +3676,546 @@ fn read_servers_for_app(app: McpAppType) -> Result<BTreeMap<String, Value>, McpE
         McpAppType::Trae => read_trae_servers(),
         McpAppType::CommandCode => read_command_code_servers(),
         McpAppType::ZCode => read_zcode_servers(),
+        McpAppType::Omp => read_omp_servers(),
     }
 }
 
 // ---------------------------------------------------------------------------
 // Scan + target application
 // ---------------------------------------------------------------------------
+
+static DISCOVERED_MCP_TOOLS_CACHE: LazyLock<Mutex<HashMap<String, Vec<String>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn mcp_tools_cache_key(server_id: &str, spec: &Value) -> String {
+    let serialized = serde_json::to_string(spec).unwrap_or_default();
+    format!("{}:{serialized}", server_id.trim().to_ascii_lowercase())
+}
+
+fn extract_declared_tools_from_spec(spec: &Value) -> Vec<String> {
+    let Some(arr) = spec.get("tools").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for item in arr {
+        if let Some(name) = item.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+            if !out.iter().any(|existing| existing == name) {
+                out.push(name.to_string());
+            }
+        } else if let Some(name) = item
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            if !out.iter().any(|existing| existing == name) {
+                out.push(name.to_string());
+            }
+        }
+    }
+    out
+}
+
+fn parse_tools_list_from_jsonrpc(payload: &Value) -> Vec<String> {
+    let tools_arr = payload
+        .pointer("/result/tools")
+        .or_else(|| payload.get("tools"))
+        .and_then(Value::as_array);
+    let Some(arr) = tools_arr else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for item in arr {
+        let name = item
+            .get("name")
+            .and_then(Value::as_str)
+            .or_else(|| item.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        if let Some(name) = name
+            && !out.iter().any(|existing| existing == name)
+        {
+            out.push(name.to_string());
+        }
+    }
+    out
+}
+
+fn parse_jsonrpc_or_sse_tools(raw: &str) -> Vec<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+    if let Ok(val) = serde_json::from_str::<Value>(trimmed) {
+        let tools = parse_tools_list_from_jsonrpc(&val);
+        if !tools.is_empty() {
+            return tools;
+        }
+    }
+    for line in trimmed.lines() {
+        let line = line.trim();
+        let json_str = line.strip_prefix("data:").map(str::trim).unwrap_or(line);
+        if json_str.starts_with('{')
+            && let Ok(val) = serde_json::from_str::<Value>(json_str)
+        {
+            let tools = parse_tools_list_from_jsonrpc(&val);
+            if !tools.is_empty() {
+                return tools;
+            }
+        }
+    }
+    Vec::new()
+}
+
+fn scan_cached_agent_mcp_schemas_in(gemini_home: &Path, server_id: &str) -> Vec<String> {
+    let brain_root = gemini_home.join("antigravity-acp").join("brain");
+    let Ok(conversations) = fs::read_dir(&brain_root) else {
+        return Vec::new();
+    };
+    let target_lower = server_id.trim().to_ascii_lowercase();
+    let target_short = target_lower
+        .rsplit('/')
+        .next()
+        .unwrap_or(&target_lower)
+        .trim_end_matches("-mcp-server")
+        .trim_end_matches("-mcp");
+
+    let mut best_tools: Vec<String> = Vec::new();
+    for conv_entry in conversations.flatten() {
+        let mcp_dir = conv_entry.path().join("mcp");
+        let Ok(servers) = fs::read_dir(&mcp_dir) else {
+            continue;
+        };
+        for srv_entry in servers.flatten() {
+            let folder_name = srv_entry.file_name().to_string_lossy().to_ascii_lowercase();
+            let folder_short = folder_name
+                .rsplit('/')
+                .next()
+                .unwrap_or(&folder_name)
+                .trim_end_matches("-mcp-server")
+                .trim_end_matches("-mcp");
+            if folder_name != target_lower
+                && folder_short != target_short
+                && !target_lower.contains(&folder_name)
+                && !folder_name.contains(&target_lower)
+            {
+                continue;
+            }
+            let Ok(files) = fs::read_dir(srv_entry.path()) else {
+                continue;
+            };
+            let mut tools = Vec::new();
+            for file in files.flatten() {
+                let path = file.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                    continue;
+                }
+                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                    let clean = stem.trim();
+                    if !clean.is_empty() {
+                        tools.push(clean.to_string());
+                    }
+                }
+            }
+            tools.sort();
+            tools.dedup();
+            if tools.len() > best_tools.len() {
+                best_tools = tools;
+            }
+        }
+    }
+    best_tools
+}
+
+fn builtin_fallback_mcp_tools(server_id: &str, spec: &Value) -> Vec<String> {
+    let id_lower = server_id.trim().to_ascii_lowercase();
+    let cmd_str = spec
+        .get("command")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let args_joined = spec
+        .get("args")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join(" ")
+                .to_ascii_lowercase()
+        })
+        .unwrap_or_default();
+    let url_str = spec
+        .get("url")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let combined = format!("{id_lower} {cmd_str} {args_joined} {url_str}");
+
+    let names: &[&str] = if id_lower == "github"
+        || id_lower.contains("github-mcp-server")
+        || combined.contains("server-github")
+        || combined.contains("githubcopilot.com/mcp")
+    {
+        &[
+            "add_issue_comment",
+            "create_branch",
+            "create_issue",
+            "create_or_update_file",
+            "create_pull_request",
+            "create_pull_request_review",
+            "create_repository",
+            "fork_repository",
+            "get_file_contents",
+            "get_issue",
+            "get_pull_request",
+            "get_pull_request_comments",
+            "get_pull_request_files",
+            "get_pull_request_reviews",
+            "get_pull_request_status",
+            "list_commits",
+            "list_issues",
+            "list_pull_requests",
+            "merge_pull_request",
+            "push_files",
+            "search_code",
+            "search_issues",
+            "search_repositories",
+            "search_users",
+            "update_issue",
+            "update_pull_request_branch",
+        ]
+    } else if id_lower == "node_repl"
+        || id_lower == "node-repl"
+        || combined.contains("mcp-Auto-install/node-repl")
+        || combined.contains("node_repl")
+        || combined.contains("node-repl")
+    {
+        &["execute_javascript", "reset_repl", "list_globals"]
+    } else if id_lower == "filesystem" || combined.contains("server-filesystem") {
+        &[
+            "read_file",
+            "read_multiple_files",
+            "write_file",
+            "edit_file",
+            "create_directory",
+            "list_directory",
+            "directory_tree",
+            "move_file",
+            "search_files",
+            "get_file_info",
+            "list_allowed_directories",
+        ]
+    } else if id_lower == "fetch" || combined.contains("mcp-server-fetch") {
+        &["fetch"]
+    } else if id_lower == "memory" || combined.contains("server-memory") {
+        &[
+            "create_entities",
+            "create_relations",
+            "add_observations",
+            "delete_entities",
+            "delete_observations",
+            "delete_relations",
+            "read_graph",
+            "search_nodes",
+            "open_nodes",
+        ]
+    } else if id_lower == "postgres" || combined.contains("server-postgres") {
+        &["query"]
+    } else if id_lower == "sqlite" || combined.contains("mcp-server-sqlite") {
+        &[
+            "read_query",
+            "write_query",
+            "create_table",
+            "list_tables",
+            "describe_table",
+            "append_insight",
+        ]
+    } else if id_lower == "playwright" || combined.contains("@playwright/mcp") {
+        &[
+            "browser_navigate",
+            "browser_snapshot",
+            "browser_click",
+            "browser_type",
+            "browser_press_key",
+            "browser_take_screenshot",
+            "browser_tabs",
+            "browser_close",
+        ]
+    } else if id_lower == "puppeteer" || combined.contains("server-puppeteer") {
+        &[
+            "puppeteer_navigate",
+            "puppeteer_screenshot",
+            "puppeteer_click",
+            "puppeteer_fill",
+            "puppeteer_select",
+            "puppeteer_hover",
+            "puppeteer_evaluate",
+        ]
+    } else if combined.contains("@oomol-lab/open-connector-mcp") {
+        &[
+            "list_apps",
+            "search_actions",
+            "describe_action",
+            "execute_action",
+            "list_connections",
+        ]
+    } else {
+        &[]
+    };
+
+    names.iter().map(|s| (*s).to_string()).collect()
+}
+
+fn resolve_fast_local_tools(server_id: &str, spec: &Value) -> Vec<String> {
+    let key = mcp_tools_cache_key(server_id, spec);
+    if let Ok(guard) = DISCOVERED_MCP_TOOLS_CACHE.lock()
+        && let Some(cached) = guard.get(&key)
+        && !cached.is_empty()
+    {
+        return cached.clone();
+    }
+
+    let declared = extract_declared_tools_from_spec(spec);
+    if !declared.is_empty() {
+        return declared;
+    }
+
+    let gemini_home = configured_dir("GEMINI_HOME", home_dir_or_default().join(".gemini"));
+    let from_schema = scan_cached_agent_mcp_schemas_in(&gemini_home, server_id);
+    if !from_schema.is_empty() {
+        if let Ok(mut guard) = DISCOVERED_MCP_TOOLS_CACHE.lock() {
+            guard.insert(key, from_schema.clone());
+        }
+        return from_schema;
+    }
+
+    builtin_fallback_mcp_tools(server_id, spec)
+}
+
+async fn probe_stdio_mcp_tools(spec: &Value) -> Vec<String> {
+    let Some(command_str) = spec
+        .get("command")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        return Vec::new();
+    };
+
+    let mut cmd = tokio::process::Command::new(command_str);
+    if let Some(args) = spec.get("args").and_then(Value::as_array) {
+        for arg in args.iter().filter_map(Value::as_str) {
+            cmd.arg(arg);
+        }
+    }
+    if let Some(cwd) = spec
+        .get("cwd")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        cmd.current_dir(cwd);
+    }
+    if let Some(env_obj) = spec.get("env").and_then(Value::as_object) {
+        for (k, v) in env_obj {
+            if let Some(val) = v.as_str() {
+                cmd.env(k, val);
+            }
+        }
+    }
+    cmd.stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(0x0800_0000);
+    }
+
+    let probe_fut = async move {
+        let mut child = cmd.spawn().ok()?;
+        let mut stdin = child.stdin.take()?;
+        let stdout = child.stdout.take()?;
+        let mut lines = BufReader::new(stdout).lines();
+
+        let init_req = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": { "name": "vibex-mcp-probe", "version": "1.0.0" }
+            }
+        });
+        let init_notif = json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized"
+        });
+        let list_req = json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/list",
+            "params": {}
+        });
+
+        let init_line = format!("{init_req}\n");
+        stdin.write_all(init_line.as_bytes()).await.ok()?;
+        stdin.flush().await.ok()?;
+
+        // Wait for initialize response (id == 1) or immediately send notifications/initialized + tools/list
+        let mut sent_list = false;
+        while let Ok(Some(line)) = lines.next_line().await {
+            let trimmed = line.trim();
+            if !trimmed.starts_with('{') {
+                continue;
+            }
+            let Ok(msg) = serde_json::from_str::<Value>(trimmed) else {
+                continue;
+            };
+            let tools = parse_tools_list_from_jsonrpc(&msg);
+            if !tools.is_empty() {
+                return Some(tools);
+            }
+            if !sent_list && msg.get("id").and_then(Value::as_i64) == Some(1) {
+                sent_list = true;
+                let batch = format!("{init_notif}\n{list_req}\n");
+                stdin.write_all(batch.as_bytes()).await.ok()?;
+                stdin.flush().await.ok()?;
+            } else if sent_list && msg.get("id").and_then(Value::as_i64) == Some(2) {
+                return Some(parse_tools_list_from_jsonrpc(&msg));
+            }
+        }
+        None
+    };
+
+    tokio::time::timeout(Duration::from_millis(2800), probe_fut)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+}
+
+async fn probe_http_mcp_tools(spec: &Value) -> Vec<String> {
+    let Some(url) = spec
+        .get("url")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        return Vec::new();
+    };
+    let Ok(client) = marketplace_http_client() else {
+        return Vec::new();
+    };
+
+    let build_post = |body: Value, session_id: Option<&str>| {
+        let mut req = client
+            .post(url)
+            .timeout(Duration::from_millis(2500))
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream");
+        if let Some(sid) = session_id {
+            req = req.header("Mcp-Session-Id", sid);
+        }
+        if let Some(headers) = spec.get("headers").and_then(Value::as_object) {
+            for (k, v) in headers {
+                if let Some(val) = v.as_str() {
+                    req = req.header(k, val);
+                }
+            }
+        }
+        req.json(&body)
+    };
+
+    let probe_fut = async {
+        let init_req = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": { "name": "vibex-mcp-probe", "version": "1.0.0" }
+            }
+        });
+        let mut session_id: Option<String> = None;
+        if let Ok(init_resp) = build_post(init_req, None).send().await {
+            session_id = init_resp
+                .headers()
+                .get("mcp-session-id")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string);
+        }
+
+        let list_req = json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/list",
+            "params": {}
+        });
+        let resp = build_post(list_req, session_id.as_deref()).send().await.ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        let body = resp.text().await.ok()?;
+        let tools = parse_jsonrpc_or_sse_tools(&body);
+        (!tools.is_empty()).then_some(tools)
+    };
+
+    tokio::time::timeout(Duration::from_millis(3000), probe_fut)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+}
+
+async fn discover_server_tools(server_id: &str, spec: &Value) -> Vec<String> {
+    let key = mcp_tools_cache_key(server_id, spec);
+    if let Ok(guard) = DISCOVERED_MCP_TOOLS_CACHE.lock()
+        && let Some(cached) = guard.get(&key)
+        && !cached.is_empty()
+    {
+        return cached.clone();
+    }
+
+    let declared = extract_declared_tools_from_spec(spec);
+    if !declared.is_empty() {
+        if let Ok(mut guard) = DISCOVERED_MCP_TOOLS_CACHE.lock() {
+            guard.insert(key, declared.clone());
+        }
+        return declared;
+    }
+
+    let gemini_home = configured_dir("GEMINI_HOME", home_dir_or_default().join(".gemini"));
+    let from_schema = scan_cached_agent_mcp_schemas_in(&gemini_home, server_id);
+    if !from_schema.is_empty() {
+        if let Ok(mut guard) = DISCOVERED_MCP_TOOLS_CACHE.lock() {
+            guard.insert(key, from_schema.clone());
+        }
+        return from_schema;
+    }
+
+    let probed = match spec.get("type").and_then(Value::as_str) {
+        Some("http" | "sse") => probe_http_mcp_tools(spec).await,
+        _ => probe_stdio_mcp_tools(spec).await,
+    };
+    if !probed.is_empty() {
+        if let Ok(mut guard) = DISCOVERED_MCP_TOOLS_CACHE.lock() {
+            guard.insert(key, probed.clone());
+        }
+        return probed;
+    }
+
+    let fallback = builtin_fallback_mcp_tools(server_id, spec);
+    if !fallback.is_empty()
+        && let Ok(mut guard) = DISCOVERED_MCP_TOOLS_CACHE.lock()
+    {
+        guard.insert(key, fallback.clone());
+    }
+    fallback
+}
 
 fn scan_local_servers() -> Result<Vec<LocalMcpServer>, McpError> {
     let mut merged: BTreeMap<String, (Value, BTreeSet<McpAppType>)> = BTreeMap::new();
@@ -3609,14 +4233,31 @@ fn scan_local_servers() -> Result<Vec<LocalMcpServer>, McpError> {
         .into_iter()
         .map(|(id, (spec, apps))| {
             let global = targets_are_global(&spec, &apps);
+            let tools = resolve_fast_local_tools(&id, &spec);
             LocalMcpServer {
                 id,
                 spec,
                 global,
                 apps: apps.into_iter().collect(),
+                tools,
             }
         })
         .collect())
+}
+
+async fn scan_local_servers_with_tools() -> Result<Vec<LocalMcpServer>, McpError> {
+    let mut servers = scan_local_servers()?;
+    let futures = servers
+        .iter()
+        .map(|server| discover_server_tools(&server.id, &server.spec))
+        .collect::<Vec<_>>();
+    let discovered = futures::future::join_all(futures).await;
+    for (server, tools) in servers.iter_mut().zip(discovered) {
+        if !tools.is_empty() {
+            server.tools = tools;
+        }
+    }
+    Ok(servers)
 }
 
 /// Synchronous read used while constructing ACP `session/new` MCP inputs.
@@ -3775,17 +4416,23 @@ fn official_entry_to_item(entry: &OfficialServerResponse) -> McpMarketplaceItem 
         .and_then(|official| official.get("status"))
         .and_then(Value::as_str)
         == Some("active");
+    let description = server
+        .description
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("No description")
+        .to_string();
+    let category = Some(catalog::normalize_connector_category(
+        None,
+        &name,
+        &description,
+    ));
     McpMarketplaceItem {
         provider_id: MARKETPLACE_OFFICIAL.to_string(),
         server_id: server.name.clone(),
         name,
-        description: server
-            .description
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or("No description")
-            .to_string(),
+        description,
         homepage,
         remote: server
             .remotes
@@ -3813,6 +4460,10 @@ fn official_entry_to_item(entry: &OfficialServerResponse) -> McpMarketplaceItem 
         downloads: None,
         score: None,
         is_deployed: None,
+        category,
+        kind: Some("mcp".to_string()),
+        status: None,
+        default_spec: None,
     }
 }
 
@@ -4011,28 +4662,40 @@ async fn search_smithery(query: &str, limit: u32) -> Result<Vec<McpMarketplaceIt
     Ok(payload
         .servers
         .into_iter()
-        .map(|item| McpMarketplaceItem {
-            provider_id: MARKETPLACE_SMITHERY.to_string(),
-            server_id: item.qualified_name,
-            name: item.display_name,
-            description: item
+        .map(|item| {
+            let description = item
                 .description
-                .unwrap_or_else(|| "No description".to_string()),
-            homepage: clean_opt(item.homepage),
-            remote: item.remote,
-            verified: item.verified,
-            icon_url: clean_opt(item.icon_url),
-            latest_version: None,
-            protocols: if item.remote {
-                vec!["http".to_string()]
-            } else {
-                Vec::new()
-            },
-            owner: clean_opt(item.owner),
-            namespace: clean_opt(item.namespace),
-            downloads: item.use_count,
-            score: item.score,
-            is_deployed: item.is_deployed,
+                .unwrap_or_else(|| "No description".to_string());
+            let category = Some(catalog::normalize_connector_category(
+                None,
+                &item.display_name,
+                &description,
+            ));
+            McpMarketplaceItem {
+                provider_id: MARKETPLACE_SMITHERY.to_string(),
+                server_id: item.qualified_name,
+                name: item.display_name,
+                description,
+                homepage: clean_opt(item.homepage),
+                remote: item.remote,
+                verified: item.verified,
+                icon_url: clean_opt(item.icon_url),
+                latest_version: None,
+                protocols: if item.remote {
+                    vec!["http".to_string()]
+                } else {
+                    Vec::new()
+                },
+                owner: clean_opt(item.owner),
+                namespace: clean_opt(item.namespace),
+                downloads: item.use_count,
+                score: item.score,
+                is_deployed: item.is_deployed,
+                category,
+                kind: Some("mcp".to_string()),
+                status: None,
+                default_spec: None,
+            }
         })
         .collect())
 }
@@ -4413,8 +5076,24 @@ fn resolve_smithery_install_spec(
 // Command entry points (wrapped by `#[tauri::command]` in config.rs)
 // ---------------------------------------------------------------------------
 
-pub async fn scan_local() -> Result<Vec<LocalMcpServer>, McpError> {
+fn installed_server_ids() -> BTreeSet<String> {
     scan_local_servers()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|s| s.id.to_ascii_lowercase())
+        .collect()
+}
+
+fn annotate_item_status(item: &mut McpMarketplaceItem, installed_ids: &BTreeSet<String>) {
+    if installed_ids.contains(&item.server_id.to_ascii_lowercase()) {
+        item.status = Some("connected".to_string());
+    } else if item.status.is_none() {
+        item.status = Some("available".to_string());
+    }
+}
+
+pub async fn scan_local() -> Result<Vec<LocalMcpServer>, McpError> {
+    scan_local_servers_with_tools().await
 }
 
 pub async fn list_marketplaces() -> Result<Vec<McpMarketplaceProvider>, McpError> {
@@ -4430,6 +5109,18 @@ pub async fn list_marketplaces() -> Result<Vec<McpMarketplaceProvider>, McpError
             name: "Smithery".to_string(),
             description: "smithery.ai MCP server marketplace".to_string(),
         },
+        McpMarketplaceProvider {
+            id: MARKETPLACE_CONNECTOR_CATALOG.to_string(),
+            name: "Connector Marketplace".to_string(),
+            description:
+                "1,700+ built-in connectors and MCP servers across Developer Tools, Analytics, MCP, Marketing Automation, Social, Productivity, Communication, and Design"
+                    .to_string(),
+        },
+        McpMarketplaceProvider {
+            id: MARKETPLACE_OPEN_CONNECTOR.to_string(),
+            name: "Open Connector".to_string(),
+            description: "Oomol / Composio 1,500+ SaaS application connectors".to_string(),
+        },
     ])
 }
 
@@ -4438,11 +5129,101 @@ pub async fn search_marketplace(
     query: Option<String>,
     limit: Option<u32>,
 ) -> Result<Vec<McpMarketplaceItem>, McpError> {
+    search_marketplace_with_category(provider_id, query, None, limit).await
+}
+
+pub async fn search_marketplace_with_category(
+    provider_id: String,
+    query: Option<String>,
+    category: Option<String>,
+    limit: Option<u32>,
+) -> Result<Vec<McpMarketplaceItem>, McpError> {
     let q = query.unwrap_or_default();
-    let max = limit.unwrap_or(30).clamp(1, 100);
+    let max_catalog = match limit {
+        Some(100) if q.trim().is_empty() => catalog::catalog_total_count(),
+        Some(n) => (n as usize).clamp(1, 2500),
+        None => catalog::catalog_total_count(),
+    };
+    let installed_ids = installed_server_ids();
+
     match provider_id.as_str() {
-        MARKETPLACE_OFFICIAL => search_official_registry(&q, max).await,
-        MARKETPLACE_SMITHERY => search_smithery(&q, max).await,
+        "" | "all" | MARKETPLACE_CONNECTOR_CATALOG | MARKETPLACE_OPEN_CONNECTOR
+        | MARKETPLACE_BUILTIN => Ok(catalog::search_builtin_catalog(
+            &q,
+            category.as_deref(),
+            max_catalog,
+            &installed_ids,
+        )),
+        MARKETPLACE_OFFICIAL => {
+            let mut snapshot_items = catalog::search_builtin_catalog(
+                &q,
+                category.as_deref(),
+                max_catalog,
+                &installed_ids,
+            );
+            if !q.trim().is_empty()
+                && let Ok(online) = search_official_registry(&q, limit.unwrap_or(50).clamp(1, 100)).await
+            {
+                let mut seen: BTreeSet<String> = snapshot_items
+                    .iter()
+                    .map(|item| item.server_id.to_ascii_lowercase())
+                    .collect();
+                for mut item in online {
+                    annotate_item_status(&mut item, &installed_ids);
+                    if let Some(ref cat) = category
+                        && !cat.trim().is_empty()
+                        && !cat.trim().eq_ignore_ascii_case("all")
+                    {
+                        let want = catalog::normalize_connector_category(Some(cat), "", "");
+                        if item.category.as_deref() != Some(want.as_str()) {
+                            continue;
+                        }
+                    }
+                    let key = item.server_id.to_ascii_lowercase();
+                    if seen.insert(key) {
+                        snapshot_items.push(item);
+                    }
+                }
+            }
+            if snapshot_items.len() > max_catalog {
+                snapshot_items.truncate(max_catalog);
+            }
+            Ok(snapshot_items)
+        }
+        MARKETPLACE_SMITHERY => {
+            let max = limit.unwrap_or(30).clamp(1, 100);
+            match search_smithery(&q, max).await {
+                Ok(mut items) => {
+                    for item in &mut items {
+                        annotate_item_status(item, &installed_ids);
+                    }
+                    let mut seen: BTreeSet<String> = items
+                        .iter()
+                        .map(|item| item.server_id.to_ascii_lowercase())
+                        .collect();
+                    for item in catalog::search_builtin_catalog(
+                        &q,
+                        category.as_deref(),
+                        max_catalog,
+                        &installed_ids,
+                    ) {
+                        if seen.insert(item.server_id.to_ascii_lowercase()) {
+                            items.push(item);
+                        }
+                        if items.len() >= max_catalog {
+                            break;
+                        }
+                    }
+                    Ok(items)
+                }
+                Err(_) => Ok(catalog::search_builtin_catalog(
+                    &q,
+                    category.as_deref(),
+                    max_catalog,
+                    &installed_ids,
+                )),
+            }
+        }
         _ => Err(bad(format!(
             "unsupported marketplace provider: {provider_id}"
         ))),
@@ -4453,10 +5234,23 @@ pub async fn get_marketplace_server_detail(
     provider_id: String,
     server_id: String,
 ) -> Result<McpMarketplaceServerDetail, McpError> {
+    let installed_ids = installed_server_ids();
     match provider_id.as_str() {
+        MARKETPLACE_CONNECTOR_CATALOG | MARKETPLACE_OPEN_CONNECTOR | MARKETPLACE_BUILTIN => {
+            catalog::get_snapshot_server_detail(&server_id, &installed_ids).ok_or_else(|| {
+                not_found(format!(
+                    "connector '{}' not found in built-in catalog",
+                    server_id
+                ))
+            })
+        }
         MARKETPLACE_OFFICIAL => {
+            if let Some(detail) = catalog::get_snapshot_server_detail(&server_id, &installed_ids) {
+                return Ok(detail);
+            }
             let detail = fetch_official_server_detail(&server_id).await?;
-            let item = official_entry_to_item(&detail);
+            let mut item = official_entry_to_item(&detail);
+            annotate_item_status(&mut item, &installed_ids);
             let install_options = build_official_install_options(&detail.server)?;
             let default_option = select_default_install_option(&install_options);
             let spec = default_option
@@ -4478,13 +5272,26 @@ pub async fn get_marketplace_server_detail(
                 downloads: item.downloads,
                 score: item.score,
                 is_deployed: item.is_deployed,
+                category: item.category,
+                kind: item.kind,
+                status: item.status,
                 default_option_id: default_option.map(|option| option.id.clone()),
                 install_options,
                 spec,
             })
         }
         MARKETPLACE_SMITHERY => {
-            let detail = fetch_smithery_server_detail(&server_id).await?;
+            let detail = match fetch_smithery_server_detail(&server_id).await {
+                Ok(detail) => detail,
+                Err(err) => {
+                    if let Some(fallback) =
+                        catalog::get_snapshot_server_detail(&server_id, &installed_ids)
+                    {
+                        return Ok(fallback);
+                    }
+                    return Err(err);
+                }
+            };
             let summary = fetch_smithery_server_summary(&server_id).await;
             let install_options = build_smithery_install_options(&detail)?;
             let default_option = select_default_install_option(&install_options);
@@ -4496,17 +5303,28 @@ pub async fn get_marketplace_server_detail(
                         detail.qualified_name
                     ))
                 })?;
+            let description = clean_opt(detail.description.clone())
+                .or_else(|| {
+                    summary
+                        .as_ref()
+                        .and_then(|s| clean_opt(s.description.clone()))
+                })
+                .unwrap_or_else(|| "No description".to_string());
+            let category = Some(catalog::normalize_connector_category(
+                None,
+                &detail.display_name,
+                &description,
+            ));
+            let status = if installed_ids.contains(&detail.qualified_name.to_ascii_lowercase()) {
+                Some("connected".to_string())
+            } else {
+                Some("available".to_string())
+            };
             Ok(McpMarketplaceServerDetail {
                 provider_id: MARKETPLACE_SMITHERY.to_string(),
                 server_id: detail.qualified_name.clone(),
                 name: detail.display_name.clone(),
-                description: clean_opt(detail.description.clone())
-                    .or_else(|| {
-                        summary
-                            .as_ref()
-                            .and_then(|s| clean_opt(s.description.clone()))
-                    })
-                    .unwrap_or_else(|| "No description".to_string()),
+                description,
                 homepage: clean_opt(detail.homepage.clone())
                     .or_else(|| summary.as_ref().and_then(|s| clean_opt(s.homepage.clone()))),
                 remote: detail.remote,
@@ -4531,6 +5349,9 @@ pub async fn get_marketplace_server_detail(
                 is_deployed: detail
                     .is_deployed
                     .or_else(|| summary.as_ref().and_then(|s| s.is_deployed)),
+                category,
+                kind: Some("mcp".to_string()),
+                status,
                 default_option_id: default_option.map(|item| item.id.clone()),
                 install_options,
                 spec,
@@ -4561,13 +5382,32 @@ pub async fn install_marketplace_server(
         canonicalize_spec(raw_spec, "marketplace install override")?
     } else {
         match provider_id.as_str() {
+            MARKETPLACE_CONNECTOR_CATALOG | MARKETPLACE_OPEN_CONNECTOR | MARKETPLACE_BUILTIN => {
+                catalog::resolve_snapshot_install_spec(&server_id, &option_id, &values)?
+            }
             MARKETPLACE_OFFICIAL => {
-                let detail = fetch_official_server_detail(&server_id).await?;
-                resolve_official_install_spec(&detail.server, &option_id, &values)?
+                if let Ok(resolved) =
+                    catalog::resolve_snapshot_install_spec(&server_id, &option_id, &values)
+                {
+                    resolved
+                } else {
+                    let detail = fetch_official_server_detail(&server_id).await?;
+                    resolve_official_install_spec(&detail.server, &option_id, &values)?
+                }
             }
             MARKETPLACE_SMITHERY => {
-                let detail = fetch_smithery_server_detail(&server_id).await?;
-                resolve_smithery_install_spec(&detail, &option_id, &values)?
+                match fetch_smithery_server_detail(&server_id).await {
+                    Ok(detail) => resolve_smithery_install_spec(&detail, &option_id, &values)?,
+                    Err(err) => {
+                        if let Ok(resolved) =
+                            catalog::resolve_snapshot_install_spec(&server_id, &option_id, &values)
+                        {
+                            resolved
+                        } else {
+                            return Err(err);
+                        }
+                    }
+                }
             }
             _ => {
                 return Err(bad(format!(
@@ -4578,7 +5418,7 @@ pub async fn install_marketplace_server(
     };
 
     install_targets(&server_id, &spec, global, &apps)?;
-    scan_local_servers()
+    scan_local_servers_with_tools().await
 }
 
 pub async fn upsert_local_server(
@@ -4595,12 +5435,12 @@ pub async fn upsert_local_server(
     }
     let canonical = canonicalize_spec(&spec, "local MCP save")?;
     set_targets(server_id.trim(), &canonical, global, &apps)?;
-    scan_local_servers()
+    scan_local_servers_with_tools().await
 }
 
 pub async fn uninstall_server(server_id: String) -> Result<Vec<LocalMcpServer>, McpError> {
     uninstall_everywhere(&server_id)?;
-    scan_local_servers()
+    scan_local_servers_with_tools().await
 }
 
 #[cfg(test)]
@@ -4819,7 +5659,7 @@ mod tests {
             .into_iter()
             .map(|app| serde_json::to_value(app).expect("serialize app"))
             .collect::<Vec<_>>();
-        assert_eq!(targets.len(), 19);
+        assert_eq!(targets.len(), 20);
         for expected in [
             "claude_code",
             "codex",
@@ -4840,12 +5680,51 @@ mod tests {
             "trae",
             "command_code",
             "zcode",
+            "omp",
         ] {
             assert!(targets.contains(&Value::String(expected.to_string())));
         }
-        assert_eq!(ASSIGNABLE_APPS.len(), 17);
+        assert_eq!(ASSIGNABLE_APPS.len(), 18);
         assert!(!ASSIGNABLE_APPS.contains(&McpAppType::OpenClaw));
         assert!(!ASSIGNABLE_APPS.contains(&McpAppType::Pi));
+    }
+
+    #[test]
+    fn omp_assignment_writes_omp_mcp_json_not_pi() {
+        let home = Path::new("/tmp/vibex-home");
+        let pi = home.join(".pi").join("agent");
+        let env = BTreeMap::from([(
+            "PI_CODING_AGENT_DIR".to_string(),
+            pi.to_string_lossy().into_owned(),
+        )]);
+        assert_eq!(
+            omp_mcp_json_path_in(home, &env),
+            home.join(".omp").join("agent").join("mcp.json")
+        );
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("mcp.json");
+        std::fs::write(
+            &path,
+            "{\"$schema\":\"keep\",\"disabledServers\":[\"old\"]}\n",
+        )
+        .unwrap();
+        upsert_omp_server_at(
+            &path,
+            "local",
+            &json!({"type": "stdio", "command": "npx", "args": ["-y", "pkg"]}),
+        )
+        .unwrap();
+        let servers = read_omp_servers_at(&path).unwrap();
+        assert_eq!(servers["local"]["command"], "npx");
+        assert!(remove_json_mcp_server_at(&path, "local").unwrap());
+        let root = read_json_file(&path).unwrap();
+        assert_eq!(root["$schema"], "keep");
+        assert!(
+            root.get("mcpServers")
+                .and_then(|servers| servers.get("local"))
+                .is_none()
+        );
     }
 
     #[test]
@@ -5253,12 +6132,113 @@ command = "other"
     #[tokio::test]
     async fn marketplace_catalog_includes_official_and_smithery() {
         let providers = list_marketplaces().await.expect("providers");
+        let ids = providers
+            .iter()
+            .map(|provider| provider.id.as_str())
+            .collect::<Vec<_>>();
         assert_eq!(
-            providers
-                .iter()
-                .map(|provider| provider.id.as_str())
-                .collect::<Vec<_>>(),
-            vec![MARKETPLACE_OFFICIAL, MARKETPLACE_SMITHERY]
+            ids,
+            vec![
+                MARKETPLACE_OFFICIAL,
+                MARKETPLACE_SMITHERY,
+                MARKETPLACE_CONNECTOR_CATALOG,
+                MARKETPLACE_OPEN_CONNECTOR,
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn connector_catalog_has_over_1700_entries_across_all_8_categories() {
+        assert!(
+            catalog::catalog_total_count() >= 1700,
+            "expected >= 1700 connectors, got {}",
+            catalog::catalog_total_count()
+        );
+
+        let all_items = search_marketplace_with_category(
+            MARKETPLACE_OFFICIAL.to_string(),
+            None,
+            None,
+            Some(100),
+        )
+        .await
+        .expect("full catalog on initial empty query");
+        assert_eq!(all_items.len(), catalog::catalog_total_count());
+
+        for expected_cat in catalog::CONNECTOR_CATEGORIES {
+            let filtered = search_marketplace_with_category(
+                MARKETPLACE_CONNECTOR_CATALOG.to_string(),
+                None,
+                Some(expected_cat.to_string()),
+                Some(500),
+            )
+            .await
+            .expect("category search");
+            assert!(
+                !filtered.is_empty(),
+                "category '{expected_cat}' must have connectors"
+            );
+            assert!(
+                filtered
+                    .iter()
+                    .all(|item| item.category.as_deref() == Some(expected_cat))
+            );
+        }
+
+        // Verify featured items from the reference UI exist with expected status/category
+        let composio = all_items
+            .iter()
+            .find(|item| item.server_id == "composio")
+            .expect("composio in catalog");
+        assert_eq!(composio.status.as_deref(), Some("available"));
+        assert_eq!(composio.category.as_deref(), Some("developer_tools"));
+
+        let aiwyn = all_items
+            .iter()
+            .find(|item| item.server_id == "aiwyn-tax-mcp")
+            .expect("aiwyn-tax-mcp in catalog");
+        assert_eq!(aiwyn.status.as_deref(), Some("available"));
+
+        let context7 = all_items
+            .iter()
+            .find(|item| item.server_id == "context7")
+            .expect("context7 in catalog");
+        assert_eq!(context7.category.as_deref(), Some("developer_tools"));
+    }
+
+    #[tokio::test]
+    async fn connector_catalog_detail_and_status_sync_with_installed_servers() {
+        let installed = BTreeSet::from(["supabase-mcp".to_string()]);
+        let results =
+            catalog::search_builtin_catalog("supabase", Some("开发者工具"), 50, &installed);
+        let supa = results
+            .iter()
+            .find(|item| item.server_id == "supabase")
+            .expect("supabase");
+        assert_eq!(supa.status.as_deref(), Some("connected"));
+        assert_eq!(supa.category.as_deref(), Some("developer_tools"));
+
+        let detail =
+            catalog::get_snapshot_server_detail("supabase-mcp", &installed).expect("detail");
+        assert_eq!(detail.status.as_deref(), Some("connected"));
+        assert_eq!(detail.category.as_deref(), Some("developer_tools"));
+        assert!(!detail.install_options.is_empty());
+
+        // Resolve install spec with required API key parameter
+        let err = catalog::resolve_snapshot_install_spec("supabase-mcp", &None, &Map::new());
+        assert!(err.is_err(), "missing required API key should error");
+
+        let values = Map::from_iter([(
+            "SUPABASE_ACCESS_TOKEN".to_string(),
+            Value::String("sbp_test_token".to_string()),
+        )]);
+        let spec = catalog::resolve_snapshot_install_spec("supabase-mcp", &None, &values)
+            .expect("resolved spec");
+        assert_eq!(spec.get("type").and_then(Value::as_str), Some("stdio"));
+        assert_eq!(
+            spec.pointer("/env/SUPABASE_ACCESS_TOKEN")
+                .and_then(Value::as_str),
+            Some("sbp_test_token")
         );
     }
 
@@ -5372,6 +6352,84 @@ command = "other"
             spec.pointer("/headers/Authorization")
                 .and_then(Value::as_str),
             Some("Bearer token")
+        );
+    }
+
+    #[test]
+    fn parses_mcp_tools_list_from_jsonrpc_and_sse_payloads() {
+        let jsonrpc = r#"{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"search_code","description":"Search"},{"name":"get_issue"},{"name":"search_code"}]}}"#;
+        assert_eq!(
+            parse_jsonrpc_or_sse_tools(jsonrpc),
+            vec!["search_code".to_string(), "get_issue".to_string()]
+        );
+
+        let sse = "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\"}}\n\nevent: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"execute_javascript\"},{\"name\":\"reset_repl\"}]}}\n";
+        assert_eq!(
+            parse_jsonrpc_or_sse_tools(sse),
+            vec!["execute_javascript".to_string(), "reset_repl".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn discovers_mcp_tools_from_spec_cached_brain_schema_and_builtin_fallbacks() {
+        let spec_declared = json!({
+            "type": "stdio",
+            "command": "node",
+            "tools": [
+                { "name": "alpha_tool" },
+                "beta_tool",
+                { "name": "alpha_tool" }
+            ]
+        });
+        assert_eq!(
+            extract_declared_tools_from_spec(&spec_declared),
+            vec!["alpha_tool".to_string(), "beta_tool".to_string()]
+        );
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let schema_dir = temp
+            .path()
+            .join("antigravity-acp")
+            .join("brain")
+            .join("conv-1")
+            .join("mcp")
+            .join("rea");
+        fs::create_dir_all(&schema_dir).expect("create schema dir");
+        fs::write(schema_dir.join("binary_overview.json"), "{}").expect("write tool 1");
+        fs::write(schema_dir.join("analyze_function.json"), "{}").expect("write tool 2");
+        fs::write(schema_dir.join("instructions.md"), "# docs").expect("write md");
+
+        let rea_tools = scan_cached_agent_mcp_schemas_in(temp.path(), "rea");
+        assert_eq!(
+            rea_tools,
+            vec![
+                "analyze_function".to_string(),
+                "binary_overview".to_string()
+            ]
+        );
+
+        let gh_fallback = builtin_fallback_mcp_tools(
+            "com.github/github-mcp-server",
+            &json!({ "type": "http", "url": "https://api.githubcopilot.com/mcp/" }),
+        );
+        assert!(gh_fallback.contains(&"create_pull_request".to_string()));
+        assert!(gh_fallback.contains(&"search_code".to_string()));
+
+        let repl_fallback = builtin_fallback_mcp_tools(
+            "node_repl",
+            &json!({
+                "type": "stdio",
+                "command": "node",
+                "args": ["C:/Users/demo/.claude/mcp-Auto-install/node-repl/node_repl.js"]
+            }),
+        );
+        assert_eq!(
+            repl_fallback,
+            vec![
+                "execute_javascript".to_string(),
+                "reset_repl".to_string(),
+                "list_globals".to_string()
+            ]
         );
     }
 }

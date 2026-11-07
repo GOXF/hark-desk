@@ -148,6 +148,14 @@ fn codeg_pinned_distribution_matrix_is_exact() {
             "qodercli",
             ">=20",
         ),
+        (
+            "omp",
+            ProfileComponent::CombinedRuntime,
+            "@oh-my-pi/pi-coding-agent",
+            "18.8.0",
+            "omp",
+            ">=20",
+        ),
     ] {
         let source = profile(id)
             .install_sources
@@ -701,6 +709,7 @@ fn built_in_profiles_are_declarative_and_bind_explicitly() {
             "trae",
             "command_code",
             "zcode",
+            "omp",
         ]
     );
 
@@ -804,6 +813,7 @@ fn built_in_profiles_are_declarative_and_bind_explicitly() {
             ("trae", None),
             ("command_code", None),
             ("zcode", None),
+            ("omp", None),
         ]
     );
     assert!(
@@ -843,6 +853,7 @@ fn codeg_account_action_matrix_is_complete() {
         ("grok", &["login", "logout", "subscription"][..]),
         ("cursor", &["login", "logout", "subscription"][..]),
         ("deepseek_harness", &["setup"][..]),
+        ("omp", &["login"][..]),
     ] {
         let profile = catalog.profile(&AgentId::parse(agent_id).unwrap()).unwrap();
         assert_eq!(
@@ -984,7 +995,7 @@ fn built_in_profiles_keep_codeg_advanced_configuration_contract() {
     );
     assert_eq!(
         native_field(&catalog, "deepseek_harness", "deepseek_harness_api_key").path,
-        ["DEEPSEEK_API_KEY"]
+        ["refs", "DEEPSEEK_API_KEY"]
     );
 }
 
@@ -1061,6 +1072,16 @@ fn codeg_directory_semantics_and_settings_capabilities_are_profile_declared() {
             .contains(&AgentSettingsFeature::AuthenticationMode)
     );
     assert!(
+        profile("omp")
+            .settings_features
+            .contains(&AgentSettingsFeature::AuthenticationMode)
+    );
+    assert!(
+        profile("omp")
+            .settings_features
+            .contains(&AgentSettingsFeature::ReusableModelProviders)
+    );
+    assert!(
         profile("deepseek_harness")
             .settings_features
             .contains(&AgentSettingsFeature::DshPlugins)
@@ -1097,6 +1118,7 @@ fn codeg_directory_semantics_and_settings_capabilities_are_profile_declared() {
         "trae",
         "command_code",
         "zcode",
+        "omp",
     ] {
         assert!(
             catalog.supports_reusable_model_providers(&AgentId::parse(id).unwrap()),
@@ -1128,6 +1150,7 @@ fn codeg_directory_semantics_and_settings_capabilities_are_profile_declared() {
         "trae",
         "command_code",
         "zcode",
+        "omp",
     ] {
         assert!(
             profile(id)
@@ -1164,6 +1187,7 @@ fn codeg_directory_semantics_and_settings_capabilities_are_profile_declared() {
         "trae",
         "command_code",
         "zcode",
+        "omp",
     ] {
         assert!(
             profile(id)
@@ -1426,3 +1450,19 @@ fn resolve_vendor_cli_hits_extra_dirs_while_spawn_ignores_vendor_cli() {
         .expect("adapter binary should be accepted for ACP launch");
     assert_eq!(lock.absolute_acp_program, adapter_bin);
 }
+
+#[test]
+fn omp_native_config_exposes_approval_mode_select_field() {
+    let catalog = BuiltInProfileCatalog::bundled();
+    let field = native_field(&catalog, "omp", "omp_approval_mode");
+    assert_eq!(field.label, "工具审批模式");
+    assert_eq!(field.path, &["tools", "approvalMode"]);
+    assert_eq!(field.kind, NativeConfigFieldKind::Select);
+    assert_eq!(field.surface, NativeConfigSurface::Configuration);
+    let values: Vec<_> = field.options.iter().map(|(value, _)| *value).collect();
+    assert_eq!(
+        values,
+        ["always-ask", "always-ask-cached", "write", "yolo"]
+    );
+}
+

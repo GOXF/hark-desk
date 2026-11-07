@@ -218,12 +218,21 @@ pub fn built_in_auth_mode_policy(agent_id: &AgentId) -> Option<BuiltInAuthModePo
             subscription_scrub_env: MIMO_SCRUB_ENV,
             default_mode: "official_subscription",
         }),
+        "omp" => Some(BuiltInAuthModePolicy {
+            mode_env: "OMP_AUTH_MODE",
+            credential_env: "OMP_API_KEY",
+            modes: OMP_MODES,
+            credential_modes: &[],
+            subscription_scrub_env: &[],
+            default_mode: "official_subscription",
+        }),
         _ => None,
     }
 }
 
 const OPENCODE_MODES: &[&str] = &["official_subscription", "model_provider"];
 const OPENCODE_CREDENTIAL_MODES: &[&str] = &[];
+const OMP_MODES: &[&str] = &["official_subscription", "model_provider"];
 const HERMES_MODES: &[&str] = &["official_subscription", "official_api", "model_provider"];
 const HERMES_CREDENTIAL_MODES: &[&str] = &["official_api"];
 const KIMI_MODES: &[&str] = &["official_subscription", "official_api", "model_provider"];
@@ -323,7 +332,7 @@ pub fn resolve_built_in_auth_mode(
     if agent_id.as_str() == "deepseek_harness"
         && env
             .get("DEEPSEEK_BASE_URL")
-            .is_some_and(|value| !value.trim().is_empty())
+            .is_some_and(|value| !value.trim().is_empty() && !is_deepseek_official_base_url(value))
     {
         return "custom".to_string();
     }
@@ -355,6 +364,9 @@ pub fn is_non_official_api_url(agent_id: &AgentId, url: &str) -> bool {
     if normalized.is_empty() {
         return false;
     }
+    if agent_id.as_str() == "deepseek_harness" && is_deepseek_official_base_url(url) {
+        return false;
+    }
     let official = official_api_url(agent_id, "official_api")
         .or_else(|| official_api_url(agent_id, "custom"))
         .or_else(|| official_api_url(agent_id, "api_key"))
@@ -374,12 +386,27 @@ fn normalize_api_url(url: &str) -> String {
         .to_string()
 }
 
+pub const DEEPSEEK_OFFICIAL_BASE_URL: &str = "https://api.deepseek.com";
+pub const DEEPSEEK_OFFICIAL_ANTHROPIC_BASE_URL: &str = "https://api.deepseek.com/anthropic";
+
+pub fn is_deepseek_official_base_url(url: &str) -> bool {
+    let normalized = url.trim().trim_end_matches('/');
+    normalized.eq_ignore_ascii_case(DEEPSEEK_OFFICIAL_BASE_URL)
+        || normalized.eq_ignore_ascii_case(DEEPSEEK_OFFICIAL_ANTHROPIC_BASE_URL)
+}
+
+fn is_deepseek_official_anthropic_base_url(url: &str) -> bool {
+    url.trim()
+        .trim_end_matches('/')
+        .eq_ignore_ascii_case(DEEPSEEK_OFFICIAL_ANTHROPIC_BASE_URL)
+}
+
 pub fn official_api_url(agent_id: &AgentId, mode: &str) -> Option<&'static str> {
     match (agent_id.as_str(), mode) {
         ("claude_code", "official_api" | "custom") => Some("https://api.anthropic.com"),
         ("codex", "api_key") => Some("https://api.openai.com/v1"),
         ("grok", "api_key") => Some("https://api.x.ai/v1"),
-        ("deepseek_harness", "deepseek") => Some("https://api.deepseek.com"),
+        ("deepseek_harness", "deepseek") => Some(DEEPSEEK_OFFICIAL_BASE_URL),
         (id, "gemini-api-key") if AgentKind::Antigravity.matches_id(id) => {
             Some("https://generativelanguage.googleapis.com")
         }
@@ -406,9 +433,9 @@ fn resolved_auth_mode<'a>(
         .filter(|mode| policy.modes.contains(mode))
         .unwrap_or_else(|| {
             if agent_id.as_str() == "deepseek_harness"
-                && env
-                    .get("DEEPSEEK_BASE_URL")
-                    .is_some_and(|value| !value.trim().is_empty())
+                && env.get("DEEPSEEK_BASE_URL").is_some_and(|value| {
+                    !value.trim().is_empty() && !is_deepseek_official_base_url(value)
+                })
             {
                 "custom"
             } else {
@@ -423,6 +450,11 @@ pub fn apply_built_in_auth_mode_policy(agent_id: &AgentId, env: &mut HashMap<Str
     };
     migrate_legacy_antigravity_auth_mode(agent_id, env);
     let mode = resolved_auth_mode(agent_id, policy, env).to_string();
+    let preserve_deepseek_anthropic_url = agent_id.as_str() == "deepseek_harness"
+        && mode == "deepseek"
+        && env
+            .get("DEEPSEEK_BASE_URL")
+            .is_some_and(|value| is_deepseek_official_anthropic_base_url(value));
     if mode != "official_api" {
         match agent_id.as_str() {
             "qoder" => {
@@ -443,6 +475,13 @@ pub fn apply_built_in_auth_mode_policy(agent_id: &AgentId, env: &mut HashMap<Str
         }
     }
     for key in auth_mode_scrubbed_env_keys(agent_id, &mode) {
+        if *key == "DEEPSEEK_BASE_URL" && preserve_deepseek_anthropic_url {
+            env.insert(
+                "DEEPSEEK_BASE_URL".to_string(),
+                DEEPSEEK_OFFICIAL_ANTHROPIC_BASE_URL.to_string(),
+            );
+            continue;
+        }
         env.remove(*key);
     }
     if agent_id.as_str() == "cursor" {
@@ -500,6 +539,14 @@ pub fn built_in_auth_mode_scrubbed_env_keys(
         return &[];
     };
     let mode = resolved_auth_mode(agent_id, policy, env);
+    if agent_id.as_str() == "deepseek_harness"
+        && mode == "deepseek"
+        && env
+            .get("DEEPSEEK_BASE_URL")
+            .is_some_and(|value| is_deepseek_official_anthropic_base_url(value))
+    {
+        return &[];
+    }
     auth_mode_scrubbed_env_keys(agent_id, mode)
 }
 
@@ -678,6 +725,7 @@ pub fn apply_built_in_launch_policy(
             bind_pi_acp_pi_command(env, requested.as_deref());
         }
         "grok" => apply_grok_native_launch_env(env),
+        "deepseek_harness" => apply_dsh_native_launch_env(env),
         // In-process Cline runtime so model switches apply, and no
         // `npm update -g cline` after stdin closes (Codeg pin 3.0.73).
         "cline" => {
@@ -686,9 +734,149 @@ pub fn apply_built_in_launch_policy(
             env.entry("CLINE_NO_AUTO_UPDATE".to_string())
                 .or_insert_with(|| "1".into());
         }
+        // OMP reads PI_CODING_AGENT_DIR. The parent process often has that
+        // variable for Pi. Pin this child to the OMP directory VibeX writes,
+        // and do not inherit Pi's ACP switches. MCP stays on session/new.
+        "omp" => apply_omp_native_launch_env(env),
         _ => {}
     }
     apply_built_in_launch_argument_policy(agent_id, env, args);
+}
+
+fn apply_omp_native_launch_env(env: &mut HashMap<String, String>) {
+    let home = env
+        .get("HOME")
+        .or_else(|| env.get("USERPROFILE"))
+        .map(PathBuf::from)
+        .or_else(dirs::home_dir);
+    let Some(home) = home else {
+        return;
+    };
+    let map = env
+        .iter()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    let agent_dir = crate::omp_auth::agent_dir(&home, &map);
+    env.insert(
+        "PI_CODING_AGENT_DIR".to_string(),
+        agent_dir.to_string_lossy().into_owned(),
+    );
+    env.remove("PI_ACP_ENABLE_EMBEDDED_CONTEXT");
+    env.remove("PI_ACP_ENABLE_EXTENSION_COMMANDS");
+    env.remove("PI_ACP_PI_COMMAND");
+    env.remove("PI_CODING_AGENT_SESSION_DIR");
+}
+
+fn dsh_config_dir(env: &HashMap<String, String>) -> PathBuf {
+    if let Some(home) = env
+        .get("DSH_HOME")
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    {
+        return PathBuf::from(home);
+    }
+    if let Some(home) = std::env::var_os("DSH_HOME").filter(|value| !value.is_empty()) {
+        return PathBuf::from(home);
+    }
+    env.get("HOME")
+        .or_else(|| env.get("USERPROFILE"))
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(dirs::home_dir)
+        .map(|home| home.join(".dsh"))
+        .unwrap_or_else(|| PathBuf::from(".dsh"))
+}
+
+fn sanitize_and_read_dsh_credentials(dsh_dir: &Path) -> Option<String> {
+    let path = dsh_dir.join(".credentials.yaml");
+    let text = std::fs::read_to_string(&path).ok()?;
+    let mut doc: serde_json::Value = serde_yaml::from_str(&text).ok()?;
+    let root = doc.as_object_mut()?;
+    let mut mutated = false;
+    let stray: Vec<(String, serde_json::Value)> = root
+        .iter()
+        .filter(|(key, _)| !matches!(key.as_str(), "version" | "records" | "refs"))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    if !stray.is_empty() {
+        mutated = true;
+        for (key, _) in &stray {
+            root.remove(key);
+        }
+    }
+    if root.get("version").and_then(serde_json::Value::as_u64) != Some(1) {
+        root.insert(
+            "version".to_string(),
+            serde_json::Value::Number(serde_json::Number::from(1)),
+        );
+        mutated = true;
+    }
+    if !stray.is_empty() {
+        let refs = root
+            .entry("refs")
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+        if !refs.is_object() {
+            *refs = serde_json::Value::Object(serde_json::Map::new());
+        }
+        if let Some(refs_obj) = refs.as_object_mut() {
+            for (key, value) in stray {
+                if value.is_string() {
+                    refs_obj.entry(key).or_insert(value);
+                }
+            }
+        }
+    }
+    let api_key = root
+        .get("refs")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|refs| {
+            refs.get("DEEPSEEK_API_KEY")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .or_else(|| {
+                    refs.values()
+                        .find_map(|value| value.as_str().map(str::trim))
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string)
+                })
+        });
+    if mutated
+        && let Ok(serialized) = serde_yaml::to_string(&doc)
+    {
+        let _ = std::fs::write(&path, serialized);
+    }
+    api_key
+}
+
+fn apply_dsh_native_launch_env(env: &mut HashMap<String, String>) {
+    let dsh_dir = dsh_config_dir(env);
+    let credential_key = sanitize_and_read_dsh_credentials(&dsh_dir);
+    let has_env_key = env
+        .get("DEEPSEEK_API_KEY")
+        .map(|value| value.trim())
+        .is_some_and(|value| !value.is_empty());
+    if !has_env_key
+        && let Some(api_key) = credential_key
+    {
+        env.insert("DEEPSEEK_API_KEY".to_string(), api_key);
+    }
+    if let Some(base_url) = env.get("DEEPSEEK_BASE_URL").cloned() {
+        let normalized = base_url.trim().trim_end_matches('/').to_string();
+        if normalized.is_empty() {
+            env.remove("DEEPSEEK_BASE_URL");
+        } else {
+            env.insert("DEEPSEEK_BASE_URL".to_string(), normalized);
+        }
+    }
+    if env.contains_key("DEEPSEEK_ACP_PROVIDER") {
+        env.insert(
+            "DEEPSEEK_ACP_PROVIDER".to_string(),
+            "deepseek-official".to_string(),
+        );
+    }
 }
 
 /// Carry Grok's native `ui.permission_mode` into the launch env so new sessions
@@ -1074,15 +1262,48 @@ pub fn auto_approve_mode_for_launch(
     agent_id: &AgentId,
     env: &HashMap<String, String>,
 ) -> AgentAutoApproveMode {
-    if agent_id.as_str() != "grok" {
-        return AgentAutoApproveMode::Off;
+    match agent_id.as_str() {
+        "grok" => {
+            let mode = env.get("GROK_PERMISSION_MODE").map(String::as_str);
+            if grok_mode_skips_permission_prompts(mode.map(str::trim)) {
+                AgentAutoApproveMode::Yolo
+            } else {
+                AgentAutoApproveMode::Off
+            }
+        }
+        "omp" => {
+            if read_omp_approval_mode(env).as_deref() == Some("yolo") {
+                AgentAutoApproveMode::Yolo
+            } else {
+                AgentAutoApproveMode::Off
+            }
+        }
+        _ => AgentAutoApproveMode::Off,
     }
-    let mode = env.get("GROK_PERMISSION_MODE").map(String::as_str);
-    if grok_mode_skips_permission_prompts(mode.map(str::trim)) {
-        AgentAutoApproveMode::Yolo
-    } else {
-        AgentAutoApproveMode::Off
-    }
+}
+
+fn read_omp_approval_mode(env: &HashMap<String, String>) -> Option<String> {
+    let home = env
+        .get("HOME")
+        .or_else(|| env.get("USERPROFILE"))
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let btree_env: std::collections::BTreeMap<String, String> =
+        env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let config_path = crate::omp_auth::agent_dir(&home, &btree_env).join("config.yml");
+    let text = std::fs::read_to_string(config_path).ok()?;
+    let value: serde_yaml::Value = serde_yaml::from_str(&text).ok()?;
+    value
+        .get("tools")
+        .and_then(|tools| tools.get("approvalMode"))
+        .and_then(serde_yaml::Value::as_str)
+        .map(str::trim)
+        .filter(|mode| !mode.is_empty())
+        .map(str::to_string)
 }
 
 fn grok_mode_skips_permission_prompts(mode: Option<&str>) -> bool {
@@ -1209,6 +1430,49 @@ mod tests {
         assert_eq!(codex["DISABLE_MCP_CONFIG_FILTERING"], "true");
 
         let temp = tempfile::tempdir().unwrap();
+        let omp_home = temp.path();
+        let mut omp = HashMap::from([
+            ("HOME".to_string(), omp_home.to_string_lossy().into_owned()),
+            (
+                "USERPROFILE".to_string(),
+                omp_home.to_string_lossy().into_owned(),
+            ),
+            (
+                "PI_CODING_AGENT_DIR".to_string(),
+                omp_home
+                    .join(".pi")
+                    .join("agent")
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+            (
+                "PI_ACP_ENABLE_EMBEDDED_CONTEXT".to_string(),
+                "true".to_string(),
+            ),
+            (
+                "PI_CODING_AGENT_SESSION_DIR".to_string(),
+                omp_home
+                    .join(".pi")
+                    .join("agent")
+                    .join("sessions")
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+        ]);
+        apply_built_in_launch_policy(&AgentId::parse("omp").unwrap(), &mut omp, &mut Vec::new());
+        assert_eq!(
+            omp.get("PI_CODING_AGENT_DIR").map(String::as_str),
+            Some(
+                omp_home
+                    .join(".omp")
+                    .join("agent")
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+        assert!(!omp.contains_key("PI_ACP_ENABLE_EMBEDDED_CONTEXT"));
+        assert!(!omp.contains_key("PI_CODING_AGENT_SESSION_DIR"));
+
         let mut pi = HashMap::from([(
             "HOME".to_string(),
             temp.path().to_string_lossy().into_owned(),
@@ -1516,6 +1780,16 @@ mod tests {
         );
         assert_eq!(official_api_url(&qoder, "official_subscription"), None);
 
+        let omp = AgentId::parse("omp").unwrap();
+        assert_eq!(
+            built_in_auth_mode_policy(&omp).unwrap().modes,
+            ["official_subscription", "model_provider"]
+        );
+        assert_eq!(
+            auth_mode_kind(&omp, "official_subscription"),
+            AgentAuthModeKind::Subscription
+        );
+
         let mimo = AgentId::parse("mimo_code").unwrap();
         assert_eq!(
             built_in_auth_mode_policy(&mimo).unwrap().modes,
@@ -1801,4 +2075,116 @@ mod tests {
             "subscription"
         );
     }
+
+    #[test]
+    fn deepseek_harness_launch_policy_migrates_legacy_top_level_credentials_and_normalizes_env() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let cred_path = temp.path().join(".credentials.yaml");
+        std::fs::write(&cred_path, "DEEPSEEK_API_KEY: sk-legacy-dsh\n").expect("write legacy");
+
+        let dsh = AgentId::parse("deepseek_harness").unwrap();
+        let mut env = HashMap::from([
+            (
+                "DSH_HOME".to_string(),
+                temp.path().to_string_lossy().to_string(),
+            ),
+            (
+                "DEEPSEEK_BASE_URL".to_string(),
+                "https://api.deepseek.com/anthropic/".to_string(),
+            ),
+            ("DEEPSEEK_ACP_PROVIDER".to_string(), "custom-id".to_string()),
+        ]);
+        let mut args = Vec::new();
+        apply_built_in_launch_policy(&dsh, &mut env, &mut args);
+
+        assert_eq!(
+            env.get("DEEPSEEK_API_KEY").map(String::as_str),
+            Some("sk-legacy-dsh")
+        );
+        assert_eq!(
+            env.get("DEEPSEEK_BASE_URL").map(String::as_str),
+            Some("https://api.deepseek.com/anthropic")
+        );
+        assert_eq!(
+            env.get("DEEPSEEK_ACP_PROVIDER").map(String::as_str),
+            Some("deepseek-official")
+        );
+
+        let rewritten: serde_json::Value =
+            serde_yaml::from_str(&std::fs::read_to_string(&cred_path).expect("read rewritten"))
+                .expect("valid yaml");
+        assert_eq!(rewritten["version"], serde_json::json!(1));
+        assert!(rewritten.get("DEEPSEEK_API_KEY").is_none());
+        assert_eq!(
+            rewritten["refs"]["DEEPSEEK_API_KEY"],
+            serde_json::json!("sk-legacy-dsh")
+        );
+    }
+
+    #[test]
+    fn deepseek_harness_official_mode_preserves_anthropic_url_and_scrubs_custom_url() {
+        let dsh = AgentId::parse("deepseek_harness").unwrap();
+        let policy = built_in_auth_mode_policy(&dsh).unwrap();
+
+        let anthropic_env = HashMap::from([
+            (
+                "DEEPSEEK_BASE_URL".to_string(),
+                "https://api.deepseek.com/anthropic".to_string(),
+            ),
+            ("DEEPSEEK_API_KEY".to_string(), "sk-test".to_string()),
+        ]);
+        assert_eq!(
+            resolve_built_in_auth_mode(&dsh, policy, &anthropic_env, true, true, None),
+            "deepseek"
+        );
+        assert!(super::built_in_auth_mode_scrubbed_env_keys(&dsh, &anthropic_env).is_empty());
+
+        let mut scrubbed_custom = HashMap::from([
+            ("DSH_AUTH_MODE".to_string(), "deepseek".to_string()),
+            (
+                "DEEPSEEK_BASE_URL".to_string(),
+                "https://gateway.example.com/v1".to_string(),
+            ),
+        ]);
+        apply_built_in_auth_mode_policy(&dsh, &mut scrubbed_custom);
+        assert!(!scrubbed_custom.contains_key("DEEPSEEK_BASE_URL"));
+    }
+
+    #[test]
+    fn omp_launch_auto_approve_mode_reflects_config_yml_yolo() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let agent_dir = temp.path().join(".omp").join("agent");
+        std::fs::create_dir_all(&agent_dir).expect("create .omp/agent");
+        let omp = AgentId::parse("omp").unwrap();
+        let env = HashMap::from([(
+            "HOME".to_string(),
+            temp.path().to_string_lossy().to_string(),
+        )]);
+
+        assert_eq!(
+            auto_approve_mode_for_launch(&omp, &env),
+            crate::permissions::AgentAutoApproveMode::Off
+        );
+
+        std::fs::write(
+            agent_dir.join("config.yml"),
+            "tools:\n  approvalMode: write\n",
+        )
+        .expect("write config.yml");
+        assert_eq!(
+            auto_approve_mode_for_launch(&omp, &env),
+            crate::permissions::AgentAutoApproveMode::Off
+        );
+
+        std::fs::write(
+            agent_dir.join("config.yml"),
+            "tools:\n  approvalMode: yolo\n",
+        )
+        .expect("write config.yml");
+        assert_eq!(
+            auto_approve_mode_for_launch(&omp, &env),
+            crate::permissions::AgentAutoApproveMode::Yolo
+        );
+    }
 }
+
