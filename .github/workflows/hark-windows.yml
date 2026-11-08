@@ -1,8 +1,8 @@
 name: Hark Desk Windows
 
+# 只手动打包：日常推送不打包，用户本地测试通过后再在 Actions 里点 Run workflow
+# （选 main 才会发布 nightly，选其他分支只做编译验证）。
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
