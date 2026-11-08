@@ -22,6 +22,7 @@ export type AgentRuntimeTurnInput = {
   workflowRefs?: ConversationWorkflowRef[];
   fileRefs?: ConversationInputPayload['fileRefs'];
   operationId?: string;
+  validateSubmission?: () => void;
 };
 
 /**
@@ -45,6 +46,7 @@ export async function sendAgentRuntimeTurn({
   workflowRefs,
   fileRefs,
   operationId,
+  validateSubmission,
 }: AgentRuntimeTurnInput): Promise<ConversationInputSubmission> {
   const payload: ConversationInputPayload = {
     agentId: agentTypeFromExecutor(executorProfileId.executor),
@@ -59,5 +61,12 @@ export async function sendAgentRuntimeTurn({
     workflowRefs: workflowRefs ?? [],
     fileRefs: fileRefs ?? [],
   };
-  return conversationApi.submitInput(sessionId, payload, operationId);
+  return validateSubmission
+    ? conversationApi.submitInput(
+        sessionId,
+        payload,
+        operationId,
+        validateSubmission
+      )
+    : conversationApi.submitInput(sessionId, payload, operationId);
 }

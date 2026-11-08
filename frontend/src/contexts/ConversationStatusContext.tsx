@@ -19,6 +19,7 @@ export type ConversationStatusNotice =
       id: string;
       kind: 'turn-error';
       error: ConversationError;
+      onContinue?: () => void | Promise<unknown>;
       onReload?: () => void | Promise<unknown>;
       onRebind?: () => void | Promise<unknown>;
     }

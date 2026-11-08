@@ -59,13 +59,18 @@ type Args = {
   images?: string[];
   conflictMarkdown: string | null;
   reviewMarkdown: string;
-  executorProfileId: ExecutorProfileId | null;
+  executorProfileId:
+    | ExecutorProfileId
+    | null
+    | (() => ExecutorProfileId | null);
   /** Composer-selected, agent-advertised session mode applied to this turn. */
   modeOverride?: string | null;
   /** Pending agent-advertised config overrides (model / permission …) for this turn. */
   configOverrides?: AgentSessionConfigOverride[];
   clearComments: () => void;
   onBeforeSend?: () => void;
+  beforeSubmit?: () => Promise<void>;
+  validateSubmission?: (optimisticTurnId: string) => void;
   onSendFailure?: (message: string) => void;
   onAfterSendCleanup: () => void | Promise<void>;
   onPendingOperationIdChange?: (operationId: string | null) => void;
@@ -90,6 +95,8 @@ export function useFollowUpSend({
   configOverrides,
   clearComments,
   onBeforeSend,
+  beforeSubmit,
+  validateSubmission,
   onSendFailure,
   onAfterSendCleanup,
   onPendingOperationIdChange,
@@ -108,7 +115,11 @@ export function useFollowUpSend({
   const sendFollowUp = useCallback(
     async (submittedMessage?: string) => {
       if (isSendingRef.current) return;
-      if (!executorProfileId) return;
+      const profile =
+        typeof executorProfileId === 'function'
+          ? executorProfileId()
+          : executorProfileId;
+      if (!profile) return;
 
       const acceptedMessage = submittedMessage ?? message;
       const displayMessage = acceptedMessage.trim();
@@ -145,13 +156,14 @@ export function useFollowUpSend({
         onBeforeSend?.();
         setIsSendingFollowUp(true);
         setFollowUpError(null);
+        if (beforeSubmit) await beforeSubmit();
 
         let targetSessionId = sessionId;
         let targetWorkspaceId = workspaceId;
         const shouldCreateNewSession =
           isNewSessionMode ||
           !targetSessionId ||
-          (!!sessionExecutor && sessionExecutor !== executorProfileId.executor);
+          (!!sessionExecutor && sessionExecutor !== profile.executor);
 
         if (shouldCreateNewSession && isSessionScopedSlashCommand(prompt)) {
           throw new Error(t('followUpSend.sessionScopedSlashCommandError'));
@@ -162,7 +174,7 @@ export function useFollowUpSend({
 
           const session = await sessionsApi.create({
             workspace_id: workspaceId,
-            executor: executorProfileId.executor,
+            executor: profile.executor,
             name: newSessionName?.trim() ? newSessionName.trim() : null,
             initial_prompt: displayPrompt,
           });
@@ -223,7 +235,7 @@ export function useFollowUpSend({
           await sendAgentRuntimeTurn({
             workspaceId: targetWorkspaceId,
             sessionId: targetSessionId,
-            executorProfileId,
+            executorProfileId: profile,
             text: prompt,
             displayText: displayPrompt,
             images,
@@ -235,6 +247,12 @@ export function useFollowUpSend({
             })),
             fileRefs,
             operationId,
+            ...(validateSubmission
+              ? {
+                  validateSubmission: () =>
+                    validateSubmission(optimisticTurnId),
+                }
+              : {}),
           });
           turnAccepted = true;
           operationIdRef.current = null;
@@ -299,6 +317,8 @@ export function useFollowUpSend({
       configOverrides,
       clearComments,
       onBeforeSend,
+      beforeSubmit,
+      validateSubmission,
       onSendFailure,
       onAfterSendCleanup,
       onPendingOperationIdChange,

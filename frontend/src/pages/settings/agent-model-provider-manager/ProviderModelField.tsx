@@ -22,6 +22,7 @@ export function ProviderModelField({
   choices,
   disabled,
   onChange,
+  onSelectChoice = onChange,
 }: {
   label: string;
   ariaLabel: string;
@@ -30,6 +31,7 @@ export function ProviderModelField({
   choices: readonly string[];
   disabled: boolean;
   onChange: (value: string) => void;
+  onSelectChoice?: (value: string) => void;
 }) {
   const { t } = useTranslation('settings');
   const listed = value === '' || choices.includes(value);
@@ -106,7 +108,7 @@ export function ProviderModelField({
             setTyping(true);
             return;
           }
-          onChange(next);
+          onSelectChoice(next);
         }}
       />
     </label>

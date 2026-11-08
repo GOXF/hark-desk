@@ -128,6 +128,9 @@
   },
   "turnErrorCard": {
     "reloadSession": "Reload session",
+    "continueTask": "Continue task",
+    "continuePrompt": "Continue the unfinished task in this conversation from the last saved progress. First review the existing messages, tool results, and current workspace state. Preserve completed work and do not repeat successful tool actions; perform only what remains.",
+    "continueUnavailable": "The original session is not ready to continue. Reload it before trying again.",
     "newConversation": "New conversation",
     "rebindSession": "Rebind session",
     "cancelledTitle": "Cancelled",

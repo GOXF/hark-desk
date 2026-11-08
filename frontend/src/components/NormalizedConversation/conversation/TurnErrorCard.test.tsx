@@ -54,6 +54,33 @@ function kindFromCode(code: string | null): ConversationError['kind'] {
 }
 
 describe('TurnErrorCard', () => {
+  it('distinguishes continuing a failed task from a passive session reload', async () => {
+    const onContinue = vi.fn();
+    const onReload = vi.fn();
+    render(
+      <TurnErrorCard
+        error={err({ code: 'connection_closed' })}
+        onContinue={onContinue}
+        onReload={onReload}
+        placement="composer"
+      />
+    );
+    fireEvent.click(screen.getByRole('button', { name: '继续任务' }));
+    expect(onContinue).toHaveBeenCalledOnce();
+    expect(onReload).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: '重新加载会话' })
+      ).not.toBeDisabled()
+    );
+    fireEvent.click(screen.getByRole('button', { name: '重新加载会话' }));
+    expect(onReload).toHaveBeenCalledOnce();
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: '继续任务' })
+      ).not.toBeDisabled()
+    );
+  });
   it('treats a cancellation as a neutral notice without a reload action', () => {
     render(
       <TurnErrorCard error={err({ code: 'cancelled' })} onReload={vi.fn()} />
@@ -61,6 +88,23 @@ describe('TurnErrorCard', () => {
 
     expect(screen.getByText('已取消')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /重新加载/ })).toBeNull();
+  });
+
+  it.each([
+    'cancelled',
+    'auth_required',
+    'invalid_params',
+    'session_load_failed',
+  ])('does not offer task continuation for %s', (code) => {
+    render(
+      <TurnErrorCard
+        error={err({ code })}
+        onContinue={vi.fn()}
+        onReload={vi.fn()}
+        onRebind={vi.fn()}
+      />
+    );
+    expect(screen.queryByRole('button', { name: '继续任务' })).toBeNull();
   });
 
   it('renders an expired-session error with a rebind action', async () => {
@@ -115,7 +159,8 @@ describe('TurnErrorCard', () => {
       <TurnErrorCard
         error={
           {
-            message: 'Agent connection was lost and could not be re-established',
+            message:
+              'Agent connection was lost and could not be re-established',
             code: 'agent_connection_lost',
             raw: null,
           } as unknown as ConversationError

@@ -98,6 +98,7 @@ export function ConversationStatusDock({
               <TurnErrorCard
                 key={notice.id}
                 error={notice.error}
+                onContinue={notice.onContinue}
                 onReload={notice.onReload}
                 onRebind={notice.onRebind}
                 onDismiss={() => dismissNotice(notice)}
