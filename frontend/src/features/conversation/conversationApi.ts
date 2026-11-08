@@ -322,7 +322,8 @@ export function createConversationApi(transport: BackendTransport) {
     submitInput: async (
       conversationId: string,
       payload: ConversationInputPayload,
-      operationId?: string
+      operationId?: string,
+      validateSubmission?: () => void
     ): Promise<ConversationInputSubmission> => {
       const hasBeforeTurnHooks =
         promptContextRegistry.size > 0 ||
@@ -361,6 +362,9 @@ export function createConversationApi(transport: BackendTransport) {
             : {}),
         };
       }
+      // Contributors may await while session facts change. Keep the final
+      // acceptance check synchronous and adjacent to the durable submission.
+      validateSubmission?.();
       return operationId
         ? callApplicationCommand(
             transport,

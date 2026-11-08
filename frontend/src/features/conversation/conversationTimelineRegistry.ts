@@ -391,17 +391,22 @@ export function clearConversationPromptSuggestion(
   dispatch({ type: 'clear_prompt_suggestion', conversationId });
 }
 
-function timelineTurnInFlight(rows: TimelineRow[] | undefined): boolean {
+function timelineTurnInFlight(
+  rows: TimelineRow[] | undefined,
+  ignoredOptimisticTurnId?: string
+): boolean {
   return (rows ?? []).some(
     (row) =>
       row.row.kind === 'message_turn' &&
+      row.row.turn.id !== ignoredOptimisticTurnId &&
       (row.row.phase === 'streaming' || row.row.phase === 'optimistic')
   );
 }
 
 function buildSessionFacts(
   conversationId: string,
-  entry: ConversationStoreState['byConversationId'][string] | undefined
+  entry: ConversationStoreState['byConversationId'][string] | undefined,
+  ignoredOptimisticTurnId?: string
 ): ConversationSessionFacts {
   const summary = entry?.detail?.summary;
   return {
@@ -416,8 +421,12 @@ function buildSessionFacts(
     externalSessionId: summary?.external_session_id ?? null,
     turnInFlight:
       Boolean(entry?.detail?.in_flight_user_turn_id) ||
-      (entry?.optimisticTurns.length ?? 0) > 0 ||
-      timelineTurnInFlight(entry?.rows),
+      Boolean(
+        entry?.optimisticTurns.some(
+          (turn) => turn.id !== ignoredOptimisticTurnId
+        )
+      ) ||
+      timelineTurnInFlight(entry?.rows, ignoredOptimisticTurnId),
     sessionStats: entry?.detail?.session_stats ?? null,
     truncated: Boolean(entry?.olderCursor),
     loading: entry?.loading ?? false,
@@ -447,10 +456,18 @@ function areSessionFactsEqual(
 
 /** Stable snapshot for the session-details panel. Does not retain or refresh. */
 export function getConversationSessionFacts(
-  conversationId: string | null
+  conversationId: string | null,
+  options?: { ignoreOptimisticTurnId?: string }
 ): ConversationSessionFacts {
   if (!conversationId) return EMPTY_SESSION_FACTS;
   const entry = state.byConversationId[conversationId];
+  if (options?.ignoreOptimisticTurnId) {
+    return buildSessionFacts(
+      conversationId,
+      entry,
+      options.ignoreOptimisticTurnId
+    );
+  }
   const cached = factsCache.get(conversationId);
   if (cached && cached.entry === entry) return cached.facts;
   const facts = buildSessionFacts(conversationId, entry);

@@ -278,15 +278,17 @@ export function serializeSelectedModels(
     });
   }
   if (agentId === 'pi' || agentId === 'hark') {
+    const modelIds =
+      agentId === 'hark' ? ids.filter((id) => !id.includes('*')) : ids;
     const parsed = parsePiModel(
       current,
       agentId === 'hark' ? 'openai-completions' : 'openai-responses'
     );
     return JSON.stringify({
       ...parsed.raw,
-      id: ids[0] ?? '',
+      id: modelIds[0] ?? '',
       api: parsed.api,
-      models: ids,
+      models: modelIds,
     });
   }
   if (ids.length <= 1) return ids[0] ?? '';

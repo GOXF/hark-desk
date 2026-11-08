@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Badge } from '@astryxdesign/core/Badge';
 import { Ban, RefreshCw, ShieldAlert, TriangleAlert, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -24,6 +24,7 @@ import { cn } from '@/lib/utils';
 export function TurnErrorCard({
   error,
   onReload,
+  onContinue,
   onRebind,
   onDismiss,
   dismissLabel,
@@ -31,6 +32,7 @@ export function TurnErrorCard({
 }: {
   error: ConversationError;
   onReload?: () => void | Promise<unknown>;
+  onContinue?: () => void | Promise<unknown>;
   onRebind?: () => void | Promise<unknown>;
   onDismiss?: () => void;
   dismissLabel?: string;
@@ -38,16 +40,32 @@ export function TurnErrorCard({
 }) {
   const { t } = useTranslation(['conversation', 'common']);
   const [reloading, setReloading] = useState(false);
+  const pendingAction = useRef(false);
   const view = describeError(error, t);
   const showRebind = view.tone === 'error' && view.canRebind && onRebind;
   const showReload =
     view.tone === 'error' && !showRebind && view.canReload && onReload;
+  const showContinue =
+    view.tone === 'error' && !showRebind && view.canReload && onContinue;
+  const actions = [
+    ...(showContinue
+      ? [{ label: t('turnErrorCard.continueTask'), run: showContinue }]
+      : []),
+    ...(showRebind
+      ? [{ label: t('turnErrorCard.rebindSession'), run: showRebind }]
+      : showReload
+        ? [{ label: t('turnErrorCard.reloadSession'), run: showReload }]
+        : []),
+  ];
 
-  const handleReload = () => {
-    const action = showRebind ? onRebind : onReload;
-    if (!action) return;
+  const handleAction = (action: () => void | Promise<unknown>) => {
+    if (pendingAction.current) return;
+    pendingAction.current = true;
     setReloading(true);
-    void Promise.resolve(action()).finally(() => setReloading(false));
+    void Promise.resolve(action()).finally(() => {
+      pendingAction.current = false;
+      setReloading(false);
+    });
   };
 
   if (placement === 'composer') {
@@ -70,23 +88,22 @@ export function TurnErrorCard({
               }
             />
           </div>
-          {showRebind || showReload || onDismiss ? (
+          {actions.length > 0 || onDismiss ? (
             <div className="composer-status-action-slot">
-              {showRebind || showReload ? (
+              {actions.map((action) => (
                 <button
+                  key={action.label}
                   type="button"
                   className="composer-status-action"
                   disabled={reloading}
-                  onClick={handleReload}
+                  onClick={() => handleAction(action.run)}
                 >
                   <RefreshCw
                     className={cn('h-3.5 w-3.5', reloading && 'animate-spin')}
                   />
-                  {showRebind
-                    ? t('turnErrorCard.rebindSession')
-                    : t('turnErrorCard.reloadSession')}
+                  {action.label}
                 </button>
-              ) : null}
+              ))}
               {onDismiss ? (
                 <ComposerDismissButton
                   label={dismissLabel ?? t('statusDock.dismiss')}
@@ -135,25 +152,26 @@ export function TurnErrorCard({
             </div>
           ) : null}
           <PlanUsageAside usage={error.plan_usage} />
-          {showRebind || showReload ? (
-            <div className="mt-2">
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                disabled={reloading}
-                onClick={handleReload}
-              >
-                <RefreshCw
-                  className={cn(
-                    'mr-1 h-3.5 w-3.5',
-                    reloading && 'animate-spin'
-                  )}
-                />
-                {showRebind
-                  ? t('turnErrorCard.rebindSession')
-                  : t('turnErrorCard.reloadSession')}
-              </Button>
+          {actions.length > 0 ? (
+            <div className="mt-2 flex flex-wrap gap-2">
+              {actions.map((action) => (
+                <Button
+                  key={action.label}
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={reloading}
+                  onClick={() => handleAction(action.run)}
+                >
+                  <RefreshCw
+                    className={cn(
+                      'mr-1 h-3.5 w-3.5',
+                      reloading && 'animate-spin'
+                    )}
+                  />
+                  {action.label}
+                </Button>
+              ))}
             </div>
           ) : null}
         </div>

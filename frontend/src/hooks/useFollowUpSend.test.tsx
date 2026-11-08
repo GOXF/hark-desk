@@ -67,6 +67,48 @@ describe('useFollowUpSend', () => {
     cancelInputMock.mockResolvedValue({});
   });
 
+  it('waits for recovery before submitting and rejects repeated clicks while recovering', async () => {
+    let finishRecovery: () => void = () => {};
+    const beforeSubmit = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finishRecovery = resolve;
+        })
+    );
+    const queryClient = new QueryClient();
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+    const { result } = renderHook(
+      () =>
+        useFollowUpSend({
+          sessionId: 'conversation-1',
+          workspaceId: 'ws-1',
+          message: 'Continue from saved progress.',
+          executorProfileId: { executor: 'hark', variant: null },
+          conflictMarkdown: null,
+          reviewMarkdown: '',
+          clearComments: vi.fn(),
+          onAfterSendCleanup: vi.fn(),
+          beforeSubmit,
+        }),
+      { wrapper }
+    );
+    sendTurnMock.mockResolvedValue({});
+
+    act(() => {
+      void result.current.onSendFollowUp();
+      void result.current.onSendFollowUp();
+    });
+    expect(beforeSubmit).toHaveBeenCalledOnce();
+    expect(sendTurnMock).not.toHaveBeenCalled();
+    await act(async () => {
+      finishRecovery();
+    });
+    await waitFor(() => expect(sendTurnMock).toHaveBeenCalledOnce());
+    expect(createMock).not.toHaveBeenCalled();
+  });
+
   it('creates a session and sends the turn exactly once for one message', async () => {
     let resolveCreate: (value: {
       id: string;

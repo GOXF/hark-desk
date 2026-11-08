@@ -128,6 +128,9 @@
   },
   "turnErrorCard": {
     "reloadSession": "重新加载会话",
+    "continueTask": "继续任务",
+    "continuePrompt": "请从本会话最后保存的进度继续未完成的任务。先检查已有消息、工具结果和当前工作区状态，保留已完成的工作，不重复已成功执行的工具操作，只完成剩余步骤。",
+    "continueUnavailable": "原会话尚未恢复就绪，请重新加载后再继续。",
     "newConversation": "新对话",
     "rebindSession": "重新绑定会话",
     "cancelledTitle": "已取消",

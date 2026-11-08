@@ -37,8 +37,10 @@ export function DefaultProviderModelEditor({
         id,
         api: harkModel.api,
       };
-      if (id && enabled.includes(id)) {
-        payload.models = [id, ...enabled.filter((item) => item !== id)];
+      if (Array.isArray(harkModel.raw.models)) {
+        payload.models = parsePiModel(
+          serializeSelectedModels('hark', value, enabled)
+        ).raw.models;
       }
       onChange(JSON.stringify(payload));
       return;
@@ -75,8 +77,19 @@ export function DefaultProviderModelEditor({
         disabled={disabled}
         label={t('agents.model')}
         name={`${agentId}_model_provider_model`}
-        value={ids[0] ?? ''}
+        value={harkModel ? harkModel.id : (ids[0] ?? '')}
         onChange={patch}
+        onSelectChoice={
+          harkModel
+            ? (id) =>
+                onChange(
+                  serializeSelectedModels('hark', value, [
+                    id,
+                    ...enabledModelIds(value).filter((item) => item !== id),
+                  ])
+                )
+            : undefined
+        }
       />
       {harkModel ? (
         <label>

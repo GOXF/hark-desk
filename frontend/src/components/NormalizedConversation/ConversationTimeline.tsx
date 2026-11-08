@@ -110,6 +110,10 @@ import {
   type ConversationTimelineTurn,
 } from '@/features/conversation/conversationStore';
 import { useConversationTimeline } from '@/features/conversation/useConversationTimeline';
+import {
+  currentTurnErrorRow,
+  useConversationTurnRecovery,
+} from '@/features/conversation/useConversationTurnRecovery';
 import { WorkflowRunCard } from '@/features/workflow/WorkflowRunCard';
 import { useOptionalEntries } from '@/contexts/EntriesContext';
 import {
@@ -865,13 +869,25 @@ const AgentTimelineConversation = forwardRef<
   const { getActiveExecutorProfile } = useActiveExecutorProfile();
   // Keep the latest turn error in full (message + the agent's real ACP error
   // code) so the card can offer code-specific recovery instead of a flat banner.
-  const latestTurnErrorRow = sideRows
-    .filter((entry) => entry.row.kind === 'turn_error')
-    .at(-1);
+  const latestTurnErrorRow =
+    attempt.session?.executor === 'hark'
+      ? currentTurnErrorRow(conversation)
+      : sideRows.filter((entry) => entry.row.kind === 'turn_error').at(-1);
   const latestTurnError =
     latestTurnErrorRow?.row.kind === 'turn_error'
       ? latestTurnErrorRow.row.error.error
       : null;
+  const { onContinue: continueFailedTurn, error: continuationError } =
+    useConversationTurnRecovery({
+      conversationId: sessionId,
+      workspaceId: attempt.id,
+      executor: attempt.session?.executor === 'hark' ? 'hark' : null,
+      failureRowId: latestTurnErrorRow?.row_id ?? null,
+      getActiveExecutorProfile,
+    });
+  useEffect(() => {
+    if (continuationError) toast.error(continuationError);
+  }, [continuationError]);
   const turnIdsWithErrors = useMemo(() => {
     const ids = new Set<string>();
     for (const entry of sideRows) {
@@ -1897,6 +1913,7 @@ const AgentTimelineConversation = forwardRef<
         id: latestTurnErrorRow.row_id,
         kind: 'turn-error' as const,
         error: latestTurnError,
+        onContinue: continueFailedTurn,
         onReload: conversationReconnectAndReload,
         onRebind: conversationRebindSession,
       });
@@ -1927,6 +1944,7 @@ const AgentTimelineConversation = forwardRef<
   }, [
     autoPermissionNoticeRow,
     connectErrorNoticeRow,
+    continueFailedTurn,
     conversationReconnectAndReload,
     conversationRebindSession,
     handleRetry,
