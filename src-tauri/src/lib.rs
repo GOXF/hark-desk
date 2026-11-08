@@ -17,6 +17,7 @@ mod error;
 mod events;
 mod hark_bridge;
 mod hark_bridge_inject;
+mod hark_window;
 mod host_bus;
 mod host_client;
 mod host_windows;
@@ -422,6 +423,7 @@ pub fn run() {
     .plugin(tauri_plugin_process::init())
     .on_window_event(|window, event| {
         window_chrome::handle_window_event(window, event);
+        hark_window::handle_window_event(window, event);
     })
     .setup(move |app| {
         // Apply frameless chrome while the window is still hidden so the first
@@ -765,6 +767,12 @@ pub fn run() {
         commands::settings_window::open_settings_window,
         commands::app_window::open_app_window,
         plugin_dev_server::plugin_dev_connection,
+        hark_window::hark_accounts_state,
+        hark_window::hark_accounts_add,
+        hark_window::hark_accounts_rename,
+        hark_window::hark_accounts_remove,
+        hark_window::hark_window_open,
+        hark_window::hark_window_action,
         hark_bridge::commands::hark_bridge_state,
         hark_bridge::commands::hark_bridge_tunnel_save,
         hark_bridge::commands::hark_bridge_create,

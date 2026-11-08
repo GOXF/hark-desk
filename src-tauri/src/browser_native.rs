@@ -463,7 +463,7 @@ fn open_system_browser(url: &str) {
 /// [`crate::proxy_forwarder`], which listens on `127.0.0.1` without auth and
 /// dials the real upstream with the credentials. Proxies without credentials
 /// keep going to the webview directly.
-fn inherited_proxy_url() -> Option<String> {
+pub(crate) fn inherited_proxy_url() -> Option<String> {
     let raw = crate::proxy_forwarder::env_proxy_raw()?;
     if let Some(endpoint) = crate::proxy_forwarder::parse_proxy_url(&raw)
         && endpoint.has_credentials()
@@ -518,7 +518,7 @@ fn canonical_proxy_url(raw: &str) -> Option<String> {
     Some(format!("{scheme}://{host}:{port_num}"))
 }
 
-fn proxy_config_from_url(raw: &str) -> Option<wry::ProxyConfig> {
+pub(crate) fn proxy_config_from_url(raw: &str) -> Option<wry::ProxyConfig> {
     let url = canonical_proxy_url(raw)?;
     let socks = url.starts_with("socks5://");
     let rest = url
