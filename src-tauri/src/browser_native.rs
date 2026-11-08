@@ -607,6 +607,9 @@ const OVERLAY_SCROLLBAR_SCRIPT: &str = r#"
 })();
 "#;
 
+/// hark.com 云电脑画面「放大 / 弹出」按钮，脚本内部自行判断域名。
+const HARK_LIVEVIEW_SCRIPT: &str = include_str!("hark_liveview.js");
+
 const PAGE_CHROME_SCRIPT: &str = r#"
 (() => {
   function send(kind, payload) {
@@ -1447,7 +1450,8 @@ fn build_child(
         .with_initialization_script(OVERLAY_SCROLLBAR_SCRIPT)
         .with_initialization_script(PAGE_CONSOLE_SCRIPT)
         .with_initialization_script(PAGE_CHROME_SCRIPT)
-        .with_initialization_script(PAGE_NAV_SCRIPT);
+        .with_initialization_script(PAGE_NAV_SCRIPT)
+        .with_initialization_script(HARK_LIVEVIEW_SCRIPT);
     if profile_id == "ephemeral" {
         builder = builder.with_incognito(true);
     }
