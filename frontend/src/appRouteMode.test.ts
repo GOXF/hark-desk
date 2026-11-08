@@ -7,6 +7,12 @@ describe('getAppRouteMode', () => {
     expect(getAppRouteMode('/desktop-toast')).toBe('desktop-toast');
   });
 
+  it('selects the hark window shell for the exact hark window route', () => {
+    expect(getAppRouteMode('/hark-window')).toBe('hark-window');
+    expect(getAppRouteMode('/hark-window/extra')).toBe('main');
+    expect(getAppRouteMode('/hark-windows')).toBe('main');
+  });
+
   it('keeps prefixed but non-exact routes in the main app shell', () => {
     expect(getAppRouteMode('/desktop-toast/settings')).toBe('main');
     expect(getAppRouteMode('/project-rail')).toBe('main');

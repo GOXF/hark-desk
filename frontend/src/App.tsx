@@ -68,6 +68,12 @@ const DesktopToastApp = lazy(() =>
     default: module.DesktopToastApp,
   }))
 );
+// Hark 账号窗口的顶部切换条（独立窗口，单独懒加载）
+const HarkWindowApp = lazy(() =>
+  import('@/HarkWindowApp').then((module) => ({
+    default: module.HarkWindowApp,
+  }))
+);
 const MainAppRoutes = lazy(() =>
   import('@/MainAppRoutes').then((module) => ({
     default: module.MainAppRoutes,
@@ -308,6 +314,14 @@ function AppContent() {
     return (
       <Suspense fallback={null}>
         <DesktopToastApp />
+      </Suspense>
+    );
+  }
+
+  if (routeMode === 'hark-window') {
+    return (
+      <Suspense fallback={null}>
+        <HarkWindowApp />
       </Suspense>
     );
   }

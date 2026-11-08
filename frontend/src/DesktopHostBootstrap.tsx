@@ -17,9 +17,10 @@ import { getAppRouteMode } from './appRouteMode';
 const HOST_CLIENT_CHANGED = 'host-client-changed';
 
 function shouldBindAppShell(): boolean {
+  // 通知窗口和 Hark 账号窗口都不是主应用壳，不绑定宿主
+  const mode = getAppRouteMode(window.location.pathname);
   return (
-    isTauriDesktopShell() &&
-    getAppRouteMode(window.location.pathname) !== 'desktop-toast'
+    isTauriDesktopShell() && mode !== 'desktop-toast' && mode !== 'hark-window'
   );
 }
 

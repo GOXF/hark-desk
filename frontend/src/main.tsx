@@ -81,6 +81,9 @@ initAccentColor();
 warmDefaultSettingsSurface();
 if (getAppRouteMode(window.location.pathname) === 'desktop-toast') {
   document.documentElement.classList.add('desktop-toast-shell');
+} else if (getAppRouteMode(window.location.pathname) === 'hark-window') {
+  // Hark 账号窗口：背景跟主题、无滚动条
+  document.documentElement.classList.add('hark-window-shell');
 }
 
 ReactDOM.createRoot(document.getElementById('root')!).render(

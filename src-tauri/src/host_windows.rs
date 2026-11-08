@@ -68,7 +68,9 @@ pub fn host_settings_window_title(base: &str, host_name: &str) -> String {
 }
 
 pub fn is_local_desktop_window(label: &str) -> bool {
-    label != "desktop-toast" && host_app_window_label(label).is_none()
+    label != "desktop-toast"
+        && label != crate::hark_window::HARK_WINDOW_LABEL
+        && host_app_window_label(label).is_none()
 }
 
 pub fn host_family_event_labels(window_label: &str) -> Vec<String> {

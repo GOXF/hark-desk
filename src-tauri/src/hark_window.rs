@@ -363,13 +363,19 @@ pub fn handle_window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
     match event {
         tauri::WindowEvent::Resized(_) | tauri::WindowEvent::ScaleFactorChanged { .. } => {
             if let Some(wv) = window.app_handle().get_webview_window(HARK_WINDOW_LABEL) {
-                SURFACES.with(|slot| layout(&wv, &slot.borrow()));
+                SURFACES.with(|slot| {
+                if let Ok(store) = slot.try_borrow() {
+                    layout(&wv, &store);
+                }
+            });
             }
         }
         tauri::WindowEvent::CloseRequested { .. } => save_geometry(window),
         tauri::WindowEvent::Destroyed => {
             SURFACES.with(|slot| {
-                let mut store = slot.borrow_mut();
+                let Ok(mut store) = slot.try_borrow_mut() else {
+                    return;
+                };
                 store.views.clear();
                 #[cfg(target_os = "windows")]
                 store.contexts.clear();
@@ -420,7 +426,13 @@ pub async fn hark_accounts_add(
         let _g = file_lock().lock();
         let mut file = read_accounts();
         let now = chrono::Utc::now();
-        let id = format!("{ACCOUNT_PREFIX}{}", radix36(now.timestamp_millis() as u64));
+        // 同一毫秒内重复添加时往后挪一位，保证 id 唯一。
+        let mut stamp = now.timestamp_millis() as u64;
+        let mut id = format!("{ACCOUNT_PREFIX}{}", radix36(stamp));
+        while file.accounts.iter().any(|a| a.id == id) {
+            stamp += 1;
+            id = format!("{ACCOUNT_PREFIX}{}", radix36(stamp));
+        }
         let name = name
             .map(|n| n.trim().to_owned())
             .filter(|n| !n.is_empty())
@@ -601,6 +613,19 @@ pub async fn hark_window_action(app: tauri::AppHandle, action: String) -> Result
                 "reload" => view.reload(),
                 "home" => view.load_url(HARK_HOME_URL),
                 "devtools" => {
+                    #[cfg(target_os = "windows")]
+                    {
+                        use tauri_runtime_wry::wry::WebViewExtWindows;
+                        unsafe {
+                            let core = view.webview();
+                            if let Ok(settings) = core.Settings() {
+                                let _ = settings.SetAreDevToolsEnabled(true);
+                            }
+                            let _ = core.OpenDevToolsWindow();
+                        }
+                    }
+                    // open_devtools 只在 debug_assertions 下存在（release 没开 devtools 特性）
+                    #[cfg(all(not(target_os = "windows"), debug_assertions))]
                     view.open_devtools();
                     Ok(())
                 }

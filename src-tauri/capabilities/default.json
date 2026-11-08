@@ -6,6 +6,7 @@
     "main",
     "settings",
     "desktop-toast",
+    "hark-window",
     "project-rail",
     "host-*",
     "settings-host-*",

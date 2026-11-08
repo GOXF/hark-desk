@@ -545,6 +545,27 @@
     overscroll-behavior: none;
   }
 
+  /* Hark 账号窗口：主 WebView 只画顶部切换条，背景跟主题、禁止滚动 */
+  /* 主题 token 只在 .legacy-design 内定义，html/body 用同值兜底（#fff / #1b1b1b） */
+  html.hark-window-shell,
+  html.hark-window-shell body,
+  html.hark-window-shell #root {
+    background: hsl(0 0% 100%);
+    overflow: hidden;
+  }
+  html.hark-window-shell.dark,
+  html.hark-window-shell.dark body,
+  html.hark-window-shell.dark #root {
+    background: hsl(0 0% 10.59%);
+  }
+  html.hark-window-shell .legacy-design {
+    background: hsl(var(--background));
+    overflow: hidden;
+  }
+  html.hark-window-shell ::-webkit-scrollbar {
+    display: none;
+  }
+
   html.desktop-toast-shell,
   html.desktop-toast-shell body,
   html.desktop-toast-shell #root,
