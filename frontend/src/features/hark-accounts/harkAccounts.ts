@@ -99,22 +99,62 @@ async function persistConfig(): Promise<void> {
   }).catch(() => {});
 }
 
+/** Rejects with a step-labelled error when `promise` takes longer than `ms`. */
+export function withStepTimeout<T>(
+  step: string,
+  promise: Promise<T>,
+  ms = 20_000
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`「${step}」超过 ${Math.round(ms / 1000)} 秒没有响应`)),
+      ms
+    );
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+export type HarkStepReporter = (step: string) => void;
+
+async function runStep<T>(
+  step: string,
+  onStep: HarkStepReporter | undefined,
+  work: () => Promise<T>,
+  ms?: number
+): Promise<T> {
+  onStep?.(step);
+  try {
+    return await withStepTimeout(step, work(), ms);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[hark-accounts] ${step} 失败`, error);
+    throw new Error(message.includes(step) ? message : `${step}：${message}`);
+  }
+}
+
 export async function addHarkAccount(
-  name?: string
+  name?: string,
+  onStep?: HarkStepReporter
 ): Promise<BrowserProfileRecord> {
-  await ensureHostBrowserPlugin();
-  await loadBrowserPrefs();
+  // Installing the plugin may download its runtime; allow more time.
+  await runStep('启用内置浏览器插件', onStep, ensureHostBrowserPlugin, 120_000);
+  await runStep('读取浏览器配置', onStep, () => loadBrowserPrefs());
   const existing = harkAccountsFrom(
     getBrowserPrefsSnapshot().settings.profiles
   );
   const label = `${LABEL_PREFIX}${name?.trim() || `账号 ${existing.length + 1}`}`;
   const id = `${HARK_PROFILE_PREFIX}${Date.now().toString(36)}`;
-  const created = await dispatchHostBrowser<BrowserProfileRecord>(
-    'profile.create',
-    { id, label }
+  const created = await runStep('创建账号配置', onStep, () =>
+    dispatchHostBrowser<BrowserProfileRecord>('profile.create', { id, label })
   );
-  await loadBrowserPrefs();
-  await persistConfig();
+  if (!created || typeof created !== 'object' || !('id' in created)) {
+    throw new Error(`创建账号配置：插件返回了无效结果 ${JSON.stringify(created)}`);
+  }
+  await runStep('保存账号列表', onStep, async () => {
+    await loadBrowserPrefs();
+    await persistConfig();
+  });
   return created;
 }
 
@@ -124,12 +164,20 @@ export async function removeHarkAccount(profileId: string): Promise<void> {
 }
 
 export async function openHarkAccount(
-  profile: BrowserProfileRecord
+  profile: BrowserProfileRecord,
+  onStep?: HarkStepReporter
 ): Promise<boolean> {
-  await ensureHostBrowserPlugin();
-  return requestBrowserTabOpen({
+  await runStep('启用内置浏览器插件', onStep, ensureHostBrowserPlugin, 120_000);
+  onStep?.('打开 hark.com 标签页');
+  const opened = requestBrowserTabOpen({
     url: HARK_HOME_URL,
     profileId: profile.id,
     title: `Hark · ${harkAccountName(profile)}`,
   });
+  if (!opened) {
+    // The tab surface was not mounted yet; the request stays queued and opens
+    // once a workspace pane is ready.
+    console.warn('[hark-accounts] 标签页请求已排队，等待工作区面板就绪', profile.id);
+  }
+  return opened;
 }

@@ -55,20 +55,41 @@ export function HarkAccountsMenu() {
 
   const add = async () => {
     setBusy(true);
+    const toastId = toast.loading('正在添加 Hark 账号…');
+    const report = (step: string) =>
+      toast.loading('正在添加 Hark 账号…', { id: toastId, description: step });
     try {
-      const created = await addHarkAccount();
-      await openHarkAccount(created);
+      const created = await addHarkAccount(undefined, report);
+      const opened = await openHarkAccount(created, report);
+      toast.dismiss(toastId);
+      if (opened) {
+        toast.success(`已添加 ${harkAccountName(created)}，请在新标签页登录`);
+      } else {
+        toast.warning(
+          `已添加 ${harkAccountName(created)}，但标签页还没打开。先在工作区打开一个面板，再从 H 菜单点这个账号。`
+        );
+      }
     } catch (error) {
-      toast.error(`添加 Hark 账号失败：${String(error)}`);
+      toast.dismiss(toastId);
+      const message = error instanceof Error ? error.message : String(error);
+      toast.error(`添加 Hark 账号失败：${message}`);
     } finally {
       setBusy(false);
     }
   };
 
   const openAccount = (profile: (typeof accounts)[number]) => {
-    void openHarkAccount(profile).catch((error) =>
-      toast.error(`打开 Hark 账号失败：${String(error)}`)
-    );
+    void openHarkAccount(profile)
+      .then((opened) => {
+        if (!opened) {
+          toast.warning('标签页还没打开：先在工作区打开一个面板再试。');
+        }
+      })
+      .catch((error) =>
+        toast.error(
+          `打开 Hark 账号失败：${error instanceof Error ? error.message : String(error)}`
+        )
+      );
   };
 
   const openBridgeSettings = (profileId: string) => {
