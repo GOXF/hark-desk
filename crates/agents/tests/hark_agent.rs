@@ -156,6 +156,77 @@ fn write_selected_provider(directory: &Path, api: &str, model: &str) {
     .unwrap();
 }
 
+#[test]
+fn hark_launch_installs_an_isolated_short_confirmation_contract() {
+    let home = tempfile::Builder::new()
+        .prefix("hark contract ")
+        .tempdir()
+        .unwrap();
+    let directory = home.path().join("hark agent");
+    write_selected_provider(&directory, "openai-responses", "fixture-model");
+    let mut env = HashMap::from([
+        (
+            "HARK_HOME".to_string(),
+            directory.to_string_lossy().into_owned(),
+        ),
+        ("NODE_OPTIONS".to_string(), "--trace-warnings".to_string()),
+    ]);
+    agents::apply_hark_native_launch_env(&mut env).unwrap();
+    let options = env
+        .get("NODE_OPTIONS")
+        .expect("Hark preload options")
+        .clone();
+    assert!(options.starts_with("--trace-warnings "), "{options}");
+    let import = options
+        .split_whitespace()
+        .find_map(|part| part.strip_prefix("--import="))
+        .expect("Hark execution preload");
+    let path = url::Url::parse(import).unwrap().to_file_path().unwrap();
+    assert!(path.starts_with(&directory));
+    let source = std::fs::read_to_string(&path).unwrap();
+    assert!(source.contains("installHarkExecutionContract"));
+    assert_eq!(
+        env.get("HARK_CLIENT_TOOL_CONTRACT").map(String::as_str),
+        Some("1")
+    );
+    std::fs::write(&path, "stale fixture preload").unwrap();
+    agents::apply_hark_native_launch_env(&mut env).unwrap();
+    assert_eq!(env.get("NODE_OPTIONS"), Some(&options));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), source);
+}
+
+#[test]
+fn hark_launch_preserves_inherited_node_options() {
+    const CHILD: &str = "HARK_TEST_INHERITED_NODE_OPTIONS";
+    if std::env::var_os(CHILD).is_some() {
+        let home = tempfile::tempdir().unwrap();
+        let directory = home.path().join("hark");
+        write_selected_provider(&directory, "openai-responses", "fixture-model");
+        let mut env = HashMap::from([(
+            "HARK_HOME".to_string(),
+            directory.to_string_lossy().into_owned(),
+        )]);
+        agents::apply_hark_native_launch_env(&mut env).unwrap();
+        assert!(env["NODE_OPTIONS"].starts_with("--trace-warnings --import="));
+        return;
+    }
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "hark_launch_preserves_inherited_node_options",
+            "--nocapture",
+        ])
+        .env(CHILD, "1")
+        .env("NODE_OPTIONS", "--trace-warnings")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
 #[tokio::test]
 async fn hark_precheck_checks_selected_credentials_and_native_protocols() {
     let home = tempfile::tempdir().unwrap();

@@ -20,6 +20,8 @@ pub(crate) const HARK_RUNTIME_ENV_KEYS: &[&str] = &[
     "DEEPSEEK_ACP_MODEL",
     "DEEPSEEK_ACP_SESSIONS_ROOT",
     "HARK_API_KEY",
+    "HARK_CLIENT_TOOL_CONTRACT",
+    "HARK_CLIENT_TOOL_CONTRACT_HOME",
 ];
 
 pub(crate) struct HarkNativeSelection {
@@ -83,7 +85,7 @@ pub(crate) fn selection_from_documents(
     }
     if HARK_RUNTIME_ENV_KEYS
         .iter()
-        .chain(["HARK_HOME", "HOME", "USERPROFILE", "PATH"].iter())
+        .chain(["HARK_HOME", "HOME", "USERPROFILE", "PATH", "NODE_OPTIONS"].iter())
         .any(|key| key.eq_ignore_ascii_case(credential_env))
         && !credential_env.eq_ignore_ascii_case("HARK_API_KEY")
     {
@@ -154,6 +156,7 @@ pub fn apply_hark_native_launch_env(env: &mut HashMap<String, String>) -> Result
             .any(|legacy| key.eq_ignore_ascii_case(legacy))
     });
     let (agent_dir, selection) = read_native_selection(env)?;
+    install_execution_contract(&agent_dir, env)?;
     env.insert(
         "DSH_HOME".to_string(),
         agent_dir.to_string_lossy().into_owned(),
@@ -165,6 +168,48 @@ pub fn apply_hark_native_launch_env(env: &mut HashMap<String, String>) -> Result
     env.insert("DEEPSEEK_ACP_PROVIDER".to_string(), selection.provider);
     env.insert("DEEPSEEK_ACP_MODEL".to_string(), selection.model);
     env.insert(selection.credential_env, selection.credential);
+    Ok(())
+}
+
+fn install_execution_contract(
+    agent_dir: &Path,
+    env: &mut HashMap<String, String>,
+) -> Result<(), String> {
+    const SOURCE: &str = include_str!("hark_short_confirmation.mjs");
+    let directory = agent_dir.join("runtime");
+    std::fs::create_dir_all(&directory)
+        .map_err(|error| format!("Hark execution runtime directory: {error}"))?;
+    let path = directory.join("hark-execution-contract.mjs");
+    if std::fs::read(&path).ok().as_deref() != Some(SOURCE.as_bytes()) {
+        let staging = directory.join(format!(".hark-execution-{}.tmp", uuid::Uuid::new_v4()));
+        if let Err(error) =
+            std::fs::write(&staging, SOURCE).and_then(|()| std::fs::rename(&staging, &path))
+        {
+            let _ = std::fs::remove_file(&staging);
+            return Err(format!("Hark execution runtime installation: {error}"));
+        }
+    }
+    let url = url::Url::from_file_path(&path)
+        .map_err(|()| "Hark execution runtime requires an absolute path".to_string())?;
+    let import = format!("--import={url}");
+    let previous = env
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case("NODE_OPTIONS"))
+        .map(|(_, value)| value.clone())
+        .or_else(|| std::env::var("NODE_OPTIONS").ok())
+        .unwrap_or_default();
+    let options = if previous.split_whitespace().any(|option| option == import) {
+        previous
+    } else {
+        format!("{} {import}", previous.trim()).trim().to_string()
+    };
+    env.retain(|key, _| !key.eq_ignore_ascii_case("NODE_OPTIONS"));
+    env.insert("NODE_OPTIONS".to_string(), options);
+    env.insert("HARK_CLIENT_TOOL_CONTRACT".to_string(), "1".to_string());
+    env.insert(
+        "HARK_CLIENT_TOOL_CONTRACT_HOME".to_string(),
+        agent_dir.to_string_lossy().into_owned(),
+    );
     Ok(())
 }
 
