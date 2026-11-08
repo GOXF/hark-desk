@@ -9,8 +9,8 @@ use api_types::{
 };
 
 use super::{
-    ProviderNativeHomes, claude::*, codex::*, common::*, gemini::*, grok::*, kimi::*, list,
-    list_with_native, load_store_with_natives, native_import_drafts, pi::*, save,
+    ProviderNativeHomes, claude::*, codex::*, common::*, gemini::*, grok::*, hark::*, kimi::*,
+    list, list_with_native, load_store_with_natives, native_import_drafts, pi::*, save,
 };
 use crate::host::native::{
     model_provider_import::{cc_switch_app_type, drafts_to_preview, preview_cc_switch},
@@ -158,6 +158,12 @@ async fn resolve_native_fallback_api_key(
     }
     let homes = ProviderNativeHomes::resolve(home, environment);
     match agent_id.as_str() {
+        "hark" => native_hark_draft(&homes.hark)
+            .await
+            .ok()
+            .flatten()
+            .map(|draft| draft.api_key)
+            .filter(|key| !key.is_empty()),
         "claude_code" => native_claude_draft(&homes.claude)
             .await
             .ok()
@@ -699,6 +705,11 @@ async fn resolve_fallback_api_url(
     }
     let homes = ProviderNativeHomes::resolve(home, environment);
     let native_url = match agent_id.as_str() {
+        "hark" => native_hark_draft(&homes.hark)
+            .await
+            .ok()
+            .flatten()
+            .map(|draft| draft.api_url),
         "claude_code" => native_claude_draft(&homes.claude)
             .await
             .ok()
@@ -891,6 +902,9 @@ pub(super) async fn capture_projection(
             }
         }
         "grok" => capture_grok_toml(&homes.grok.join("config.toml"), &mut backup).await?,
+        "hark" => {
+            capture_hark_projection(&homes.hark, &mut backup).await?;
+        }
         "kimi_code" => {
             capture_files(
                 &homes.kimi,
@@ -964,6 +978,7 @@ pub(super) fn empty_projection_backup(agent_id: &AgentId) -> ProviderProjectionB
             .insert(GROK_DEFAULT_BACKUP_KEY.to_string(), None);
     }
     for key in match agent_id.as_str() {
+        "hark" => ["settings.yaml", ".credentials.yaml"].as_slice(),
         "kimi_code" => ["config.toml", "credentials/kimi-code.json"].as_slice(),
         "hermes" => ["config.yaml"].as_slice(),
         "openclaw" => ["openclaw.json"].as_slice(),
@@ -1011,6 +1026,7 @@ pub(super) async fn restore_projection(
             }
         }
         "grok" => restore_grok_projection(&homes.grok, backup).await,
+        "hark" => restore_hark_projection(&homes.hark, backup).await,
         "kimi_code" => {
             restore_files(
                 &homes.kimi,
@@ -1172,4 +1188,3 @@ mod tests {
         assert_eq!(dsh_key, "sk-dsh-saved");
     }
 }
-

@@ -1244,6 +1244,9 @@ async fn project_auth_mode_view(
 ) -> Result<AgentAuthModeView, ApplicationError> {
     let home =
         dirs::home_dir().ok_or_else(|| ApplicationError::internal("home directory missing"))?;
+    if agent_id.as_str() == "hark" {
+        return read_hark_auth_mode(&home, agent_id, env).await;
+    }
     project_auth_mode_view_at(&home, &provider_store_path(), agent_id, env).await
 }
 
@@ -1253,6 +1256,9 @@ async fn project_auth_mode_view_at(
     agent_id: AgentId,
     env: &HashMap<String, String>,
 ) -> Result<AgentAuthModeView, ApplicationError> {
+    if agent_id.as_str() == "hark" {
+        return read_hark_auth_mode(home, agent_id, env).await;
+    }
     let native_home = model_providers::provider_native_home(home, env, &agent_id);
     let providers =
         match model_providers::list_with_native(store_path, agent_id.clone(), Some(&native_home))
@@ -1316,6 +1322,31 @@ async fn project_auth_mode_view_at(
         credential_present,
         account_label: None,
         headless_account_env,
+    })
+}
+
+async fn read_hark_auth_mode(
+    home: &Path,
+    agent_id: AgentId,
+    env: &HashMap<String, String>,
+) -> Result<AgentAuthModeView, ApplicationError> {
+    let snapshot = NativeConfigProvider::with_environment(
+        Arc::new(TokioNativeFileSystem),
+        home.to_path_buf(),
+        env.clone().into_iter().collect(),
+    )
+    .read(&agent_id, false)
+    .await
+    .map_err(|error| ApplicationError::bad_request(error.to_string()))?;
+    Ok(AgentAuthModeView {
+        options: project_auth_mode_options(&agent_id, &["model_provider"]),
+        agent_id,
+        mode: "model_provider".to_string(),
+        modes: vec!["model_provider".to_string()],
+        credential_env: "HARK_API_KEY".to_string(),
+        credential_present: snapshot.authentication == AgentAuthenticationStatus::ApiKey,
+        account_label: None,
+        headless_account_env: None,
     })
 }
 
@@ -1781,7 +1812,7 @@ fn auth_mode_translation_keys(agent_id: &AgentId, mode: &str) -> (&'static str, 
         ("mimo_code", "model_provider") => {
             ("agents.authModeProvider", "agents.authDescMimoProvider")
         }
-        ("pi" | "openclaw", "model_provider") => {
+        ("pi" | "openclaw" | "hark", "model_provider") => {
             ("agents.authModeProvider", "agents.authDescGenericProvider")
         }
         ("omp", "official_subscription") => (
@@ -1804,10 +1835,14 @@ async fn auth_mode_preflight_item(
     }
     let view = match project_auth_mode_view(pool, agent_id.clone(), env).await {
         Ok(view) => view,
-        Err(_) => {
+        Err(error) => {
             return Ok(Some(preflight_auth_item(
                 false,
-                "无法读取鉴权模式。".to_string(),
+                if agent_id.as_str() == "hark" {
+                    error.envelope().message.clone()
+                } else {
+                    "无法读取鉴权模式。".to_string()
+                },
                 "unknown",
             )));
         }
@@ -1890,6 +1925,15 @@ async fn observed_authentication(
     agent_id: &AgentId,
     env: &HashMap<String, String>,
 ) -> AgentAuthenticationStatus {
+    if agent_id.as_str() == "hark" {
+        let Some(home) = dirs::home_dir() else {
+            return AgentAuthenticationStatus::NotLoggedIn;
+        };
+        return match read_hark_auth_mode(&home, agent_id.clone(), env).await {
+            Ok(view) if view.credential_present => AgentAuthenticationStatus::ApiKey,
+            _ => AgentAuthenticationStatus::NotLoggedIn,
+        };
+    }
     let recorded = recorded_authentication(pool, agent_id).await;
     let account_signed_out = AgentManagementApplicationService::new(pool.clone())
         .account_signed_out(agent_id)
@@ -2887,6 +2931,108 @@ fn render_plain_text(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn hark_public_auth_preflight_rejects_unselected_native_keys_and_stale_ready_state() {
+        let home = tempfile::tempdir().unwrap();
+        tokio::fs::write(
+            home.path().join(".credentials.yaml"),
+            "version: 1\nrefs:\n  HARK_API_KEY: native-test-key\n",
+        )
+        .await
+        .unwrap();
+        let pool = probe_pool("hark", "ready", "api_key", 0).await;
+        sqlx::query("CREATE TABLE agent_membership (agent_id TEXT PRIMARY KEY)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO agent_membership VALUES ('hark')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE agent_setting (agent_type TEXT PRIMARY KEY, env_json TEXT)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO agent_setting VALUES ('hark', ?)")
+            .bind(
+                json!({
+                    "HARK_HOME": home.path().to_string_lossy(),
+                    "HARK_API_KEY": "stale-environment-test-key"
+                })
+                .to_string(),
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let id = AgentId::parse("hark").unwrap();
+        let result = preflight(&pool, id.clone(), Some("authentication"))
+            .await
+            .unwrap();
+        assert_eq!(result.items.len(), 1);
+        assert_eq!(result.items[0].status, "fail");
+        let recorded: (String, String) = sqlx::query_as(
+            "SELECT lifecycle, authentication FROM agent_probe WHERE agent_id = 'hark'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            recorded,
+            ("needs_auth".to_string(), "not_logged_in".to_string())
+        );
+
+        tokio::fs::write(
+            home.path().join("settings.yaml"),
+            "hark:\n  provider: vibex\n  model: chosen\nllm-pi-ai:\n  providers:\n    vibex:\n      api: openai-completions\n      baseURL: https://models.example/v1\n      apiKeyEnv: HARK_API_KEY\n      models:\n        - id: chosen\n",
+        )
+        .await
+        .unwrap();
+        let view = auth_mode(&pool, id.clone()).await.unwrap();
+        assert!(view.credential_present);
+        assert_eq!(view.modes, ["model_provider"]);
+        assert_eq!(view.options.len(), 1);
+        assert_eq!(view.options[0].label_key, "agents.authModeProvider");
+        assert_eq!(
+            view.options[0].description_key,
+            "agents.authDescGenericProvider"
+        );
+        let result = preflight(&pool, id.clone(), Some("authentication"))
+            .await
+            .unwrap();
+        assert_eq!(result.items[0].status, "pass");
+
+        tokio::fs::write(
+            home.path().join("settings.yaml"),
+            "hark:\n  provider: vibex\n",
+        )
+        .await
+        .unwrap();
+        let error = auth_mode(&pool, id.clone()).await.unwrap_err();
+        assert!(error.envelope().message.contains("hark.model"));
+        let result = preflight(&pool, id.clone(), Some("authentication"))
+            .await
+            .unwrap();
+        assert_eq!(result.items[0].status, "fail");
+        assert!(result.items[0].detail.contains("hark.model"));
+        assert!(!result.items[0].detail.contains("native-test-key"));
+        let recorded: (String, String) = sqlx::query_as(
+            "SELECT lifecycle, authentication FROM agent_probe WHERE agent_id = 'hark'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            recorded,
+            ("needs_auth".to_string(), "not_logged_in".to_string())
+        );
+
+        tokio::fs::remove_file(home.path().join("settings.yaml"))
+            .await
+            .unwrap();
+        assert!(!auth_mode(&pool, id).await.unwrap().credential_present);
+    }
 
     async fn probe_pool(
         agent_id: &str,

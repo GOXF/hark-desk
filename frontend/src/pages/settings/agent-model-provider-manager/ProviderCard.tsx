@@ -30,6 +30,7 @@ export function ProviderCard({
   onDelete: () => void;
 }) {
   const { t } = useTranslation('settings');
+  const readOnly = provider.agent_id === 'hark' && !provider.managed;
   const latency =
     probe && probe !== 'loading' ? `${probe.latency_ms} ms` : null;
   return (
@@ -56,7 +57,7 @@ export function ProviderCard({
             'agent-model-provider-enable h-7',
             provider.bound && 'is-enabled'
           )}
-          disabled={busy || provider.bound}
+          disabled={busy || provider.bound || readOnly}
           onClick={onEnable}
         >
           {provider.bound ? (
@@ -71,7 +72,7 @@ export function ProviderCard({
           variant="ghost"
           className="h-7 w-7 p-0"
           aria-label={t('agents.providerEditAria', { name: provider.name })}
-          disabled={busy}
+          disabled={busy || readOnly}
           onClick={onEdit}
         >
           <Pencil aria-hidden="true" className="h-3.5 w-3.5" />
@@ -105,7 +106,7 @@ export function ProviderCard({
           variant="ghost"
           className="h-7 w-7 p-0"
           aria-label={t('agents.providerDeleteAria', { name: provider.name })}
-          disabled={busy || !canDelete}
+          disabled={busy || !canDelete || readOnly}
           onClick={onDelete}
         >
           <Trash2 aria-hidden="true" className="h-3.5 w-3.5" />

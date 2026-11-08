@@ -123,6 +123,89 @@ describe('AgentModelProviderManager', () => {
     );
   });
 
+  it.each(['openai-completions', 'openai-responses', 'anthropic-messages'])(
+    'creates and enables a Hark provider using %s without touching another Agent',
+    async (protocol) => {
+      const user = userEvent.setup();
+      const provider = {
+        ...gateway,
+        agent_id: 'hark',
+        name: 'Hark gateway',
+        model: JSON.stringify({ id: 'private-model', api: protocol }),
+      };
+      vi.mocked(agentManagementApi.modelProviders).mockResolvedValue({
+        agent_id: 'hark',
+        providers: [],
+        bound_provider_id: null,
+      });
+      vi.mocked(agentManagementApi.saveModelProvider).mockResolvedValue({
+        agent_id: 'hark',
+        providers: [provider],
+        bound_provider_id: null,
+      });
+      vi.mocked(agentManagementApi.bindModelProvider).mockResolvedValue({
+        agent_id: 'hark',
+        providers: [{ ...provider, bound: true }],
+        bound_provider_id: provider.id,
+      });
+      render(
+        <AgentModelProviderManager agentId="hark" disabled={false} embedded />
+      );
+      await user.click(
+        (await screen.findAllByRole('button', { name: '新建供应商' }))[0]
+      );
+      await user.type(screen.getByLabelText('Provider 名称'), 'Hark gateway');
+      await user.type(
+        screen.getByLabelText('Provider API URL'),
+        'https://gateway.example/v1'
+      );
+      await user.type(screen.getByLabelText('Provider API Key'), 'secret');
+      await user.type(screen.getByLabelText('Provider 模型'), 'private-model');
+      await pickAstryxOption(user, screen.getByLabelText('接入协议'), protocol);
+      await user.click(screen.getByRole('button', { name: '创建 Provider' }));
+      expect(agentManagementApi.saveModelProvider).toHaveBeenCalledWith({
+        id: null,
+        name: 'Hark gateway',
+        agent_id: 'hark',
+        api_url: 'https://gateway.example/v1',
+        api_key: 'secret',
+        model: JSON.stringify({ id: 'private-model', api: protocol }),
+      });
+      await user.click(await screen.findByRole('button', { name: '启用' }));
+      expect(agentManagementApi.bindModelProvider).toHaveBeenCalledWith(
+        'hark',
+        provider.id
+      );
+    }
+  );
+
+  it('keeps externally configured Hark routes read-only while allowing connection tests', async () => {
+    const provider = {
+      ...gateway,
+      id: '__native_live__',
+      agent_id: 'hark',
+      api_key: '',
+      managed: false,
+      bound: true,
+    };
+    vi.mocked(agentManagementApi.modelProviders).mockResolvedValue({
+      agent_id: 'hark',
+      providers: [provider],
+      bound_provider_id: provider.id,
+    });
+    render(
+      <AgentModelProviderManager agentId="hark" disabled={false} embedded />
+    );
+    expect(
+      await screen.findByRole('button', { name: '编辑 Gateway' })
+    ).toBeDisabled();
+    expect(screen.getByRole('button', { name: '删除 Gateway' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '已启用' })).toBeDisabled();
+    expect(
+      screen.getByRole('button', { name: '测试 Gateway 连接' })
+    ).toBeEnabled();
+  });
+
   it('creates a Pi custom provider with wire protocol', async () => {
     const user = userEvent.setup();
     vi.mocked(agentManagementApi.modelProviders).mockResolvedValue({

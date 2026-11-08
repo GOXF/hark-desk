@@ -437,6 +437,13 @@ impl AcpClientBridge {
                 // Mirror the pushed options into the stored controls so later
                 // `session/set_config_option` matching never works off stale data.
                 let mut config_options = update.config_options;
+                if self.agent_id.as_str() == "hark" {
+                    crate::hark_native::filter_hark_model_options(
+                        &self.apply.snapshot.env,
+                        &mut config_options,
+                        &mut Vec::new(),
+                    );
+                }
                 let is_omp = self.apply.agent_kind() == Some(AgentKind::Omp);
                 if is_omp {
                     ensure_omp_yolo_config_option(&mut config_options);

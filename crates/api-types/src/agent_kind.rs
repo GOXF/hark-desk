@@ -9,7 +9,7 @@
 //! ## Serialized form (canonical): snake_case
 //!
 //! `claude_code`, `codex`, `opencode`, `antigravity`, `openclaw`, `cline`, `hermes`,
-//! `codebuddy`, `kimi_code`, `pi`, `grok`, `cursor`, `deepseek_harness`, `qoder`,
+//! `codebuddy`, `kimi_code`, `pi`, `grok`, `cursor`, `deepseek_harness`, `hark`, `qoder`,
 //! `kiro`, `auggie`, `trae`, `command_code`, `zcode`, `omp`, `qa_mock` — the `executor_key` form
 //! already persisted in `sessions.agent_type`.
 //! `Serialize` / `Display` / `FromStr` / sqlx all emit this single canonical form.
@@ -53,6 +53,7 @@ pub enum AgentKind {
     Grok,
     Cursor,
     DeepseekHarness,
+    Hark,
     Qoder,
     Kiro,
     Auggie,
@@ -69,7 +70,7 @@ pub enum AgentKind {
 impl AgentKind {
     /// Every variant, in Agent Bar / picker order. `QaMock` stays last because
     /// it is a test identity, not a product Agent.
-    pub const ALL: [AgentKind; 21] = [
+    pub const ALL: [AgentKind; 22] = [
         AgentKind::ClaudeCode,
         AgentKind::Codex,
         AgentKind::Pi,
@@ -77,6 +78,7 @@ impl AgentKind {
         AgentKind::Grok,
         AgentKind::Cursor,
         AgentKind::DeepseekHarness,
+        AgentKind::Hark,
         AgentKind::Antigravity,
         AgentKind::Cline,
         AgentKind::Openclaw,
@@ -116,6 +118,7 @@ impl AgentKind {
             AgentKind::Grok => "grok",
             AgentKind::Cursor => "cursor",
             AgentKind::DeepseekHarness => "deepseek_harness",
+            AgentKind::Hark => "hark",
             AgentKind::Qoder => "qoder",
             AgentKind::Kiro => "kiro",
             AgentKind::Auggie => "auggie",
@@ -150,6 +153,7 @@ impl AgentKind {
             "grok" => AgentKind::Grok,
             "cursor" => AgentKind::Cursor,
             "deepseekharness" => AgentKind::DeepseekHarness,
+            "hark" => AgentKind::Hark,
             // `qodercli` is the installed executable name; some producers wrote it
             // as the agent id before the identity was canonicalized.
             "qoder" | "qodercli" => AgentKind::Qoder,
@@ -232,6 +236,7 @@ mod tests {
             (AgentKind::Grok, "grok"),
             (AgentKind::Cursor, "cursor"),
             (AgentKind::DeepseekHarness, "deepseek_harness"),
+            (AgentKind::Hark, "hark"),
             (AgentKind::Antigravity, "antigravity"),
             (AgentKind::Cline, "cline"),
             (AgentKind::Openclaw, "openclaw"),
@@ -304,6 +309,8 @@ mod tests {
             ("DeepseekHarness", AgentKind::DeepseekHarness),
             ("deepseek-harness", AgentKind::DeepseekHarness),
             ("deepseek_harness", AgentKind::DeepseekHarness),
+            ("Hark", AgentKind::Hark),
+            ("hark", AgentKind::Hark),
             ("QODER", AgentKind::Qoder),
             ("Qoder", AgentKind::Qoder),
             ("qoder", AgentKind::Qoder),

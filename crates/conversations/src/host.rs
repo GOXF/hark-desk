@@ -264,6 +264,10 @@ pub async fn resolve_agent_runtime_launch_settings(
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
     agents::apply_built_in_launch_policy(agent_id, &mut env, &mut args);
+    if agent_id.as_str() == "hark" {
+        agents::apply_hark_native_launch_env(&mut env)
+            .map_err(ConversationServiceError::BadRequest)?;
+    }
     let _ = utils::shell::refresh_process_path().await;
     let mut lock_env = authorization.env;
     agents::sanitize_runtime_executable_lock_env(agent_id, &mut lock_env);

@@ -271,7 +271,8 @@ pub fn default_history_sources(agent_type: AgentKind) -> Vec<AgentHistorySource>
         AgentKind::Omp => omp_history_sources(agent_type),
         // No verified on-disk history layout. An invented parser would import
         // the wrong files, so these agents stay empty until a format is known.
-        AgentKind::Kiro
+        AgentKind::Hark
+        | AgentKind::Kiro
         | AgentKind::Auggie
         | AgentKind::Trae
         | AgentKind::CommandCode
@@ -327,7 +328,8 @@ pub fn configured_history_sources(
             AgentKind::Qoder => configured_root(configured_env, "QODER_CONFIG_DIR")
                 .map(|path| path.join("projects")),
             AgentKind::Omp => omp_sessions_dir(configured_env),
-            AgentKind::Kiro
+            AgentKind::Hark
+            | AgentKind::Kiro
             | AgentKind::Auggie
             | AgentKind::Trae
             | AgentKind::CommandCode

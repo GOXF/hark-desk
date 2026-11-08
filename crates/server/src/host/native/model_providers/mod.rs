@@ -16,6 +16,7 @@ mod command_code;
 mod common;
 mod gemini;
 mod grok;
+mod hark;
 mod hermes;
 mod kimi;
 mod openclaw;
@@ -39,6 +40,7 @@ use common::*;
 use gemini::*;
 use grok::*;
 pub use grok::{NativeGrokProvider, NativeGrokState, read_native_grok_state};
+use hark::*;
 use hermes::*;
 use kimi::*;
 pub use kimi::{
@@ -58,6 +60,7 @@ struct ProviderNativeHomes {
     pub(super) codex: PathBuf,
     pub(super) gemini: PathBuf,
     pub(super) grok: PathBuf,
+    pub(super) hark: PathBuf,
     pub(super) kimi: PathBuf,
     pub(super) hermes: PathBuf,
     pub(super) openclaw: PathBuf,
@@ -79,6 +82,7 @@ impl ProviderNativeHomes {
             codex: resolve_native_home(home, environment, "CODEX_HOME", ".codex"),
             gemini: resolve_gemini_home(home, environment),
             grok: resolve_native_home(home, environment, "GROK_HOME", ".grok"),
+            hark: resolve_native_home(home, environment, "HARK_HOME", ".hark/agent"),
             kimi: resolve_native_home(home, environment, "KIMI_CODE_HOME", ".kimi-code"),
             hermes: resolve_native_home(home, environment, "HERMES_HOME", ".hermes"),
             openclaw: resolve_native_home(home, environment, "OPENCLAW_HOME", ".openclaw"),
@@ -105,6 +109,7 @@ impl ProviderNativeHomes {
             "omp" => &self.omp,
             "claude_code" => &self.claude,
             "grok" => &self.grok,
+            "hark" => &self.hark,
             "kimi_code" => &self.kimi,
             "hermes" => &self.hermes,
             "openclaw" => &self.openclaw,
@@ -154,6 +159,10 @@ pub async fn list_with_native(
 ) -> Result<AgentModelProvidersView, super::NativeError> {
     validate_agent(&agent_id)?;
     match agent_id.as_str() {
+        "hark" => {
+            let mut store = read_store(store_path).await?;
+            project_hark_view(&mut store, store_path, native_home, agent_id).await
+        }
         "pi" => {
             let native = match native_home {
                 Some(home) => Some(read_native_pi_state(home).await?),
@@ -237,6 +246,9 @@ pub async fn save(
 ) -> Result<AgentModelProvidersView, super::NativeError> {
     let homes = ProviderNativeHomes::resolve(home, environment);
     validate_request(&request)?;
+    if request.agent_id.as_str() == "hark" {
+        validate_hark_model(&request.model)?;
+    }
     let mut store = load_store_with_natives(store_path, &request.agent_id, &homes).await?;
     let id = request
         .id
@@ -536,6 +548,7 @@ async fn projected_view(
     agent_id: AgentId,
 ) -> Result<AgentModelProvidersView, super::NativeError> {
     match agent_id.as_str() {
+        "hark" => project_hark_view(store, store_path, Some(&homes.hark), agent_id).await,
         "codex" => {
             let native = read_native_codex_state(&homes.codex).await?;
             if adopt_native_providers(store, &agent_id, &codex_native_drafts(Some(&native))) {
@@ -599,6 +612,7 @@ async fn live_native_drafts(
             .collect(),
         "kimi_code" => native_kimi_provider_drafts(native_home).await?,
         "hermes" => native_hermes_draft(native_home).await?,
+        "hark" => native_hark_draft(native_home).await?.into_iter().collect(),
         "cline" => native_cline_draft(native_home).await?,
         "openclaw" => native_openclaw_drafts(native_home).await?,
         "omp" => omp_import_drafts(native_home).await?,
@@ -617,6 +631,14 @@ async fn load_store_with_natives(
     homes: &ProviderNativeHomes,
 ) -> Result<ProviderStore, super::NativeError> {
     match agent_id.as_str() {
+        "hark" => {
+            let mut store = read_store(store_path).await?;
+            let drafts = live_native_drafts(agent_id, &homes.hark).await?;
+            if reconcile_hark_binding(&mut store, agent_id, &drafts) {
+                write_store(store_path, &store).await?;
+            }
+            Ok(store)
+        }
         "codex" => {
             let native = read_native_codex_state(&homes.codex).await?;
             let mut store = read_store_reconciled(store_path, agent_id, Some(&native)).await?;
@@ -671,6 +693,7 @@ async fn native_import_drafts(
             drafts.extend(native_codex_drafts(&homes.codex).await?);
         }
         "grok" => drafts.extend(native_grok_drafts(&homes.grok).await?),
+        "hark" => drafts.extend(native_hark_draft(&homes.hark).await?),
         "kimi_code" => {
             if let Some(draft) = native_kimi_draft(&homes.kimi).await? {
                 drafts.push(draft);
@@ -737,6 +760,7 @@ async fn apply_provider(
         "codex" => apply_codex(&homes.codex, provider).await,
         "gemini" => apply_gemini(&homes.gemini, provider).await,
         "grok" => apply_grok(&homes.grok, provider).await,
+        "hark" => apply_hark(&homes.hark, provider).await,
         "kimi_code" => apply_kimi(&homes.kimi, provider).await,
         "hermes" => apply_hermes(&homes.hermes, provider).await,
         "openclaw" => apply_openclaw(&homes.openclaw, provider).await,

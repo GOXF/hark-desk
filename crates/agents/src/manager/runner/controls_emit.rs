@@ -12,11 +12,31 @@ impl AgentConnectionRunner {
         acp_session_id: &str,
         session_id: AgentSessionId,
         modes: Option<SessionModeState>,
-        config_options: Option<Vec<AcpSessionConfigOption>>,
+        mut config_options: Option<Vec<AcpSessionConfigOption>>,
         vendor_config: Option<VendorConfigWire>,
         session_meta: Option<&serde_json::Map<String, serde_json::Value>>,
-        session_model_ids: Vec<String>,
-    ) {
+        mut session_model_ids: Vec<String>,
+    ) -> Result<(), acp::Error> {
+        if self.snapshot.agent_id.as_str() == "hark" {
+            if let Err(error) = crate::hark_native::validate_hark_current_model(
+                &self.snapshot.env,
+                config_options.as_deref().unwrap_or_default(),
+            ) {
+                self.session_map.write().await.remove(&session_id);
+                *self.pending_session_id.lock().await = None;
+                self.emit_connection_status(
+                    AgentConnectionStatus::Failed,
+                    Some(error.clone()),
+                    Some(session_id),
+                );
+                return Err(acp::Error::new(-32602, error));
+            }
+            crate::hark_native::filter_hark_model_options(
+                &self.snapshot.env,
+                config_options.get_or_insert_with(Vec::new),
+                &mut session_model_ids,
+            );
+        }
         let raw_modes = modes.clone();
         let (config_options, mode_uses_set_mode) = unify_session_config_options(
             modes,
@@ -143,6 +163,7 @@ impl AgentConnectionRunner {
         }
 
         self.emit_derived_session_controls(session_id).await;
+        Ok(())
     }
 
     pub(in crate::manager) async fn session_controls_snapshot(

@@ -38,6 +38,8 @@ mod grok_mcp;
 mod grok_plan;
 mod grok_subagent;
 mod grok_usage;
+mod hark_native;
+pub use hark_native::apply_hark_native_launch_env;
 pub mod history;
 mod host_capabilities;
 mod hosted_terminal;

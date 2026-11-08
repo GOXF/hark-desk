@@ -10,6 +10,7 @@ describe('AgentTypeIcon', () => {
     ['kimi', 'Kimi Code'],
     ['cursor', 'Cursor'],
     ['deepseek_harness', 'DeepSeek Harness'],
+    ['hark', 'Hark'],
     ['kiro', 'Kiro CLI'],
     ['auggie', 'Auggie'],
     ['trae', 'TRAE CLI'],

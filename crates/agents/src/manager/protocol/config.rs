@@ -408,11 +408,10 @@ pub(in crate::manager) fn find_config_override_selection_for_agent(
                         already_selected: select.current_value.0.as_ref() == effective,
                     });
                 }
-                // For Claude Code's model selector, once healing has run, a value
-                // that the non-empty select still rejects must be dropped rather
-                // than fuzzy-matched onto a different model row.
-                if agent_kind == Some(AgentKind::ClaudeCode)
-                    && is_model_config_option(option)
+                // Claude's healed model ids and Hark's provider routes require
+                // an exact advertised value, not a fuzzy match to another row.
+                if ((agent_kind == Some(AgentKind::ClaudeCode) && is_model_config_option(option))
+                    || (agent_kind == Some(AgentKind::Hark) && option.id.0.as_ref() == "model"))
                     && config_option_rejects_value(option, effective)
                 {
                     continue;

@@ -91,7 +91,7 @@ impl AgentConnectionRunner {
         key: &str,
         value: &serde_json::Value,
     ) -> Result<(), acp::Error> {
-        let (config_options, vendor_config, session_model_ids) = {
+        let (mut config_options, vendor_config, mut session_model_ids) = {
             let controls = self.session_controls.read().await;
             let state = controls.get(&session_id);
             (
@@ -104,6 +104,13 @@ impl AgentConnectionRunner {
                     .unwrap_or_default(),
             )
         };
+        if self.snapshot.agent_id.as_str() == "hark" {
+            crate::hark_native::filter_hark_model_options(
+                &self.snapshot.env,
+                &mut config_options,
+                &mut session_model_ids,
+            );
+        }
         if config_options.is_empty() {
             self.emit_override_diagnostic(session_id, "config_controls_missing", key);
             return Ok(());
@@ -393,10 +400,24 @@ impl AgentConnectionRunner {
             ))
             .block_task()
             .await?;
+        if agent_kind == Some(AgentKind::Hark) {
+            crate::hark_native::validate_hark_current_model(
+                &self.snapshot.env,
+                &response.config_options,
+            )
+            .map_err(|error| acp::Error::new(-32602, error))?;
+        }
         {
             let mut controls = self.session_controls.write().await;
             let stored = controls.entry(session_id).or_default();
             stored.config_options = response.config_options;
+            if agent_kind == Some(AgentKind::Hark) {
+                crate::hark_native::filter_hark_model_options(
+                    &self.snapshot.env,
+                    &mut stored.config_options,
+                    &mut stored.session_model_ids,
+                );
+            }
             if agent_kind == Some(AgentKind::Omp) {
                 ensure_omp_yolo_config_option(&mut stored.config_options);
                 if stored.omp_yolo_mode {

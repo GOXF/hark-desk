@@ -594,6 +594,27 @@ const MimoCodeMonoIcon = memo(function MimoCodeMonoIcon({
   );
 });
 
+const HarkMonoIcon = memo(function HarkMonoIcon({ size = '1em' }: IconProps) {
+  return (
+    <svg
+      height={size}
+      style={baseSvgStyle}
+      viewBox="0 0 16 16"
+      width={size}
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <title>Hark</title>
+      <path
+        d="M4 2.5v11M12 2.5v11M4 8h8"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+});
+
 type AnyIcon = FunctionComponent<IconProps>;
 
 const COLOR_ICONS: Partial<Record<string, AnyIcon>> = {
@@ -623,6 +644,7 @@ const MONO_ICONS: Partial<Record<string, AnyIcon>> = {
   qoder: QoderMonoIcon,
   auggie: AuggieMonoIcon,
   mimo_code: MimoCodeMonoIcon,
+  hark: HarkMonoIcon,
 };
 
 export function hasAgentTypeIcon(agentType: string): boolean {

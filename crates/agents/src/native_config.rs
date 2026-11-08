@@ -158,6 +158,8 @@ impl NativeConfigProvider {
         let mut files = Vec::with_capacity(profile.native_config.len());
         let mut exists = false;
         let mut vault_api_key_present = false;
+        let mut hark_settings = Value::Null;
+        let mut hark_credentials = Value::Null;
 
         for binding in profile.native_config {
             let path = self.binding_path(binding);
@@ -169,6 +171,13 @@ impl NativeConfigProvider {
             let file_exists = bytes.is_some();
             exists |= file_exists;
             let document = parse_document(binding, bytes.as_deref())?;
+            if agent_id.as_str() == "hark" {
+                match binding.binding_id {
+                    "settings" => hark_settings = document.clone(),
+                    "credentials" => hark_credentials = document.clone(),
+                    _ => {}
+                }
+            }
             let content = match bytes.as_deref() {
                 Some(bytes) => std::str::from_utf8(bytes)
                     .map(str::to_owned)
@@ -200,6 +209,13 @@ impl NativeConfigProvider {
         let mut api_key_present =
             vault_api_key_present || fields.iter().any(|field| field.secret && field.present);
         let mut account_logged_in = account_logged_in;
+        if agent_id.as_str() == "hark" {
+            api_key_present =
+                crate::hark_native::selection_from_documents(&hark_settings, &hark_credentials)
+                    .map_err(NativeConfigError::Invalid)?
+                    .is_some();
+            account_logged_in = false;
+        }
         if crate::AgentKind::Omp.matches_id(agent_id.as_str()) {
             let presence = crate::omp_auth::credential_presence(&crate::omp_auth::agent_dir(
                 &self.home,

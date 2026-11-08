@@ -7,6 +7,572 @@ use serde_json::Value;
 
 use super::*;
 
+#[tokio::test]
+async fn hark_provider_binding_uses_an_isolated_harness_home() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let hark_home = temp.path().join("custom-hark");
+    let dsh_home = home.join(".dsh");
+    let store_path = temp.path().join("providers.json");
+    let environment = HashMap::from([(
+        "HARK_HOME".to_string(),
+        hark_home.to_string_lossy().to_string(),
+    )]);
+    tokio::fs::create_dir_all(&dsh_home).await.unwrap();
+    tokio::fs::write(dsh_home.join("settings.yaml"), "deepseek-sentinel: true\n")
+        .await
+        .unwrap();
+    let agent_id = AgentId::parse("hark").unwrap();
+    save(
+        &store_path,
+        &home,
+        &environment,
+        AgentModelProviderSaveRequest {
+            id: Some("hark-gateway".to_string()),
+            name: "Gateway".to_string(),
+            agent_id: agent_id.clone(),
+            api_url: "https://gateway.example/v1".to_string(),
+            api_key: Some("hark-test-key".to_string()),
+            model: r#"{"api":"anthropic-messages","id":"router-large","models":["router-large","router-small"]}"#.to_string(),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(!hark_home.join("settings.yaml").exists());
+    let view = bind(
+        &store_path,
+        &home,
+        &environment,
+        agent_id.clone(),
+        Some("hark-gateway".to_string()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(view.bound_provider_id.as_deref(), Some("hark-gateway"));
+    assert!(view.providers[0].api_key.is_empty());
+    assert!(view.providers[0].credential_present);
+    let settings: Value = serde_yaml::from_str(
+        &tokio::fs::read_to_string(hark_home.join("settings.yaml"))
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(settings["hark"]["provider"], "vibex");
+    assert_eq!(settings["hark"]["model"], "router-large");
+    let provider = &settings["llm-pi-ai"]["providers"]["vibex"];
+    assert_eq!(provider["api"], "anthropic-messages");
+    assert_eq!(provider["baseURL"], "https://gateway.example/v1");
+    assert_eq!(provider["apiKeyEnv"], "HARK_API_KEY");
+    assert_eq!(provider["models"][1]["id"], "router-small");
+    let credentials: Value = serde_yaml::from_str(
+        &tokio::fs::read_to_string(hark_home.join(".credentials.yaml"))
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(credentials["version"], 1);
+    assert_eq!(credentials["refs"]["HARK_API_KEY"], "hark-test-key");
+    let probe = resolve_probe_target(
+        &store_path,
+        &home,
+        &environment,
+        &agent_id,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        probe,
+        (
+            "https://gateway.example/v1".to_string(),
+            "hark-test-key".to_string()
+        )
+    );
+    bind(&store_path, &home, &environment, agent_id, None)
+        .await
+        .unwrap();
+    assert!(!hark_home.join("settings.yaml").exists());
+    assert!(!hark_home.join(".credentials.yaml").exists());
+    assert_eq!(
+        tokio::fs::read_to_string(dsh_home.join("settings.yaml"))
+            .await
+            .unwrap(),
+        "deepseek-sentinel: true\n"
+    );
+}
+
+#[tokio::test]
+async fn hark_native_selection_takes_precedence_over_a_stale_binding() {
+    let temp = tempfile::tempdir().unwrap();
+    let hark_home = temp.path().join(".hark/agent");
+    let store_path = temp.path().join("providers.json");
+    let environment = HashMap::from([(
+        "HARK_HOME".to_string(),
+        hark_home.to_string_lossy().to_string(),
+    )]);
+    let agent_id = AgentId::parse("hark").unwrap();
+    save(
+        &store_path,
+        temp.path(),
+        &environment,
+        AgentModelProviderSaveRequest {
+            id: Some("first".to_string()),
+            name: "First".to_string(),
+            agent_id: agent_id.clone(),
+            api_url: "https://first.example/v1".to_string(),
+            api_key: Some("first-test-key".to_string()),
+            model: "first-model".to_string(),
+        },
+    )
+    .await
+    .unwrap();
+    bind(
+        &store_path,
+        temp.path(),
+        &environment,
+        agent_id.clone(),
+        Some("first".to_string()),
+    )
+    .await
+    .unwrap();
+    let external_settings = "hark:\n  provider: external\n  model: external-model\nllm-pi-ai:\n  providers:\n    external:\n      apiKeyEnv: EXTERNAL_KEY\n      api: openai-responses\n      baseURL: https://external.example/v1\n      models:\n        - id: external-model\n";
+    let external_credentials = "version: 1\nrefs:\n  EXTERNAL_KEY: external-test-key\n";
+    tokio::fs::write(hark_home.join("settings.yaml"), external_settings)
+        .await
+        .unwrap();
+    tokio::fs::write(hark_home.join(".credentials.yaml"), external_credentials)
+        .await
+        .unwrap();
+    let view = list_with_native(&store_path, agent_id.clone(), Some(&hark_home))
+        .await
+        .unwrap();
+    let active = view
+        .providers
+        .iter()
+        .find(|provider| provider.bound)
+        .unwrap();
+    assert_eq!(active.api_url, "https://external.example/v1");
+    assert_ne!(active.id, "first");
+    assert!(active.api_key.is_empty());
+    bind(&store_path, temp.path(), &environment, agent_id, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        tokio::fs::read_to_string(hark_home.join("settings.yaml"))
+            .await
+            .unwrap(),
+        external_settings
+    );
+    assert_eq!(
+        tokio::fs::read_to_string(hark_home.join(".credentials.yaml"))
+            .await
+            .unwrap(),
+        external_credentials
+    );
+}
+
+#[tokio::test]
+async fn hark_unbind_preserves_unrelated_native_changes() {
+    let temp = tempfile::tempdir().unwrap();
+    let hark_home = temp.path().join(".hark/agent");
+    let store_path = temp.path().join("providers.json");
+    let agent_id = AgentId::parse("hark").unwrap();
+    let env = HashMap::from([(
+        "HARK_HOME".to_string(),
+        hark_home.to_string_lossy().to_string(),
+    )]);
+    save(
+        &store_path,
+        temp.path(),
+        &env,
+        AgentModelProviderSaveRequest {
+            id: Some("gateway".into()),
+            name: "Gateway".into(),
+            agent_id: agent_id.clone(),
+            api_url: "https://gateway.example/v1".into(),
+            api_key: Some("test-key".into()),
+            model: "test-model".into(),
+        },
+    )
+    .await
+    .unwrap();
+    bind(
+        &store_path,
+        temp.path(),
+        &env,
+        agent_id.clone(),
+        Some("gateway".into()),
+    )
+    .await
+    .unwrap();
+    let settings_path = hark_home.join("settings.yaml");
+    let credentials_path = hark_home.join(".credentials.yaml");
+    let mut settings: Value =
+        serde_yaml::from_str(&tokio::fs::read_to_string(&settings_path).await.unwrap()).unwrap();
+    settings["extra"] = Value::Bool(true);
+    settings["llm-pi-ai"]["providers"]["vibex"]["headers"] =
+        serde_json::json!({"X-Custom": "preserve"});
+    tokio::fs::write(&settings_path, serde_yaml::to_string(&settings).unwrap())
+        .await
+        .unwrap();
+    tokio::fs::write(
+        &credentials_path,
+        "version: 1\nrefs:\n  HARK_API_KEY: test-key\n  OTHER_KEY: preserve-other-key\n",
+    )
+    .await
+    .unwrap();
+    bind(&store_path, temp.path(), &env, agent_id, None)
+        .await
+        .unwrap();
+    let restored_settings: Value =
+        serde_yaml::from_str(&tokio::fs::read_to_string(&settings_path).await.unwrap()).unwrap();
+    assert_eq!(restored_settings["extra"], true);
+    assert_eq!(
+        restored_settings["llm-pi-ai"]["providers"]["vibex"]["headers"]["X-Custom"],
+        "preserve"
+    );
+    assert!(restored_settings["hark"].is_null());
+    assert!(restored_settings["llm-pi-ai"]["providers"]["vibex"]["baseURL"].is_null());
+    let restored_credentials: Value =
+        serde_yaml::from_str(&tokio::fs::read_to_string(&credentials_path).await.unwrap()).unwrap();
+    assert_eq!(restored_credentials["version"], 1);
+    assert_eq!(
+        restored_credentials["refs"]["OTHER_KEY"],
+        "preserve-other-key"
+    );
+    assert!(restored_credentials["refs"]["HARK_API_KEY"].is_null());
+}
+
+#[tokio::test]
+async fn hark_presets_retain_credentials_and_the_selected_wire_protocol() {
+    let temp = tempfile::tempdir().unwrap();
+    let hark_home = temp.path().join(".hark/agent");
+    let store_path = temp.path().join("providers.json");
+    let agent_id = AgentId::parse("hark").unwrap();
+    let env = HashMap::from([(
+        "HARK_HOME".to_string(),
+        hark_home.to_string_lossy().to_string(),
+    )]);
+    for api in [
+        "openai-completions",
+        "openai-responses",
+        "anthropic-messages",
+    ] {
+        let request = AgentModelProviderSaveRequest {
+            id: Some("gateway".into()),
+            name: "Gateway".into(),
+            agent_id: agent_id.clone(),
+            api_url: "https://gateway.example".into(),
+            api_key: Some("test-key".into()),
+            model: serde_json::json!({"id": "test-model", "api": api}).to_string(),
+        };
+        save(&store_path, temp.path(), &env, request.clone())
+            .await
+            .unwrap();
+        bind(
+            &store_path,
+            temp.path(),
+            &env,
+            agent_id.clone(),
+            Some("gateway".into()),
+        )
+        .await
+        .unwrap();
+        let view = save(
+            &store_path,
+            temp.path(),
+            &env,
+            AgentModelProviderSaveRequest {
+                api_key: Some(String::new()),
+                name: "Edited Gateway".into(),
+                ..request
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(view.providers.len(), 1);
+        assert_eq!(view.providers[0].name, "Edited Gateway");
+        assert!(view.providers[0].api_key.is_empty());
+        assert!(view.providers[0].credential_present);
+        let settings: Value = serde_yaml::from_str(
+            &tokio::fs::read_to_string(hark_home.join("settings.yaml"))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(settings["llm-pi-ai"]["providers"]["vibex"]["api"], api);
+        let credentials: Value = serde_yaml::from_str(
+            &tokio::fs::read_to_string(hark_home.join(".credentials.yaml"))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(credentials["refs"]["HARK_API_KEY"], "test-key");
+    }
+    for model in ["", r#"{"id":"test-model","api":"invalid"}"#] {
+        let error = save(
+            &store_path,
+            temp.path(),
+            &env,
+            AgentModelProviderSaveRequest {
+                id: Some("invalid".into()),
+                name: "Invalid".into(),
+                agent_id: agent_id.clone(),
+                api_url: "https://invalid.example".into(),
+                api_key: Some("invalid-test-key".into()),
+                model: model.into(),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("Hark Provider"));
+    }
+    assert_eq!(
+        list(&store_path, agent_id).await.unwrap().providers.len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn hark_same_endpoint_native_changes_do_not_rewrite_the_saved_preset() {
+    let temp = tempfile::tempdir().unwrap();
+    let hark_home = temp.path().join(".hark/agent");
+    let store_path = temp.path().join("providers.json");
+    let agent_id = AgentId::parse("hark").unwrap();
+    let env = HashMap::from([(
+        "HARK_HOME".to_string(),
+        hark_home.to_string_lossy().to_string(),
+    )]);
+    save(
+        &store_path,
+        temp.path(),
+        &env,
+        AgentModelProviderSaveRequest {
+            id: Some("gateway".into()),
+            name: "Saved Gateway".into(),
+            agent_id: agent_id.clone(),
+            api_url: "https://gateway.example/v1".into(),
+            api_key: Some("saved-test-key".into()),
+            model: "saved-model".into(),
+        },
+    )
+    .await
+    .unwrap();
+    bind(
+        &store_path,
+        temp.path(),
+        &env,
+        agent_id.clone(),
+        Some("gateway".into()),
+    )
+    .await
+    .unwrap();
+    tokio::fs::write(
+        hark_home.join("settings.yaml"),
+        "hark:\n  provider: vibex\n  model: external-model\nllm-pi-ai:\n  providers:\n    vibex:\n      apiKeyEnv: HARK_API_KEY\n      api: openai-responses\n      baseURL: https://gateway.example/v1\n      models:\n        - id: external-model\n",
+    )
+    .await
+    .unwrap();
+    let view = list_with_native(&store_path, agent_id.clone(), Some(&hark_home))
+        .await
+        .unwrap();
+    assert_eq!(view.providers.len(), 2);
+    let saved = view
+        .providers
+        .iter()
+        .find(|provider| provider.id == "gateway")
+        .unwrap();
+    assert!(saved.managed);
+    assert!(!saved.bound);
+    assert_eq!(saved.name, "Saved Gateway");
+    assert_eq!(saved.model, "saved-model");
+    let native = view
+        .providers
+        .iter()
+        .find(|provider| provider.bound)
+        .unwrap();
+    assert_eq!(native.id, "__native_live__");
+    assert!(!native.managed);
+    assert!(native.api_key.is_empty());
+    assert_eq!(
+        resolve_probe_target(
+            &store_path,
+            temp.path(),
+            &env,
+            &agent_id,
+            Some("__native_live__"),
+            None,
+            None
+        )
+        .await
+        .unwrap(),
+        ("https://gateway.example/v1".into(), "saved-test-key".into())
+    );
+}
+
+#[tokio::test]
+async fn hark_native_key_rotation_preserves_the_saved_credential() {
+    let temp = tempfile::tempdir().unwrap();
+    let hark_home = temp.path().join(".hark/agent");
+    let store_path = temp.path().join("providers.json");
+    let agent_id = AgentId::parse("hark").unwrap();
+    let env = HashMap::from([(
+        "HARK_HOME".to_string(),
+        hark_home.to_string_lossy().to_string(),
+    )]);
+    save(
+        &store_path,
+        temp.path(),
+        &env,
+        AgentModelProviderSaveRequest {
+            id: Some("gateway".into()),
+            name: "Saved Gateway".into(),
+            agent_id: agent_id.clone(),
+            api_url: "https://gateway.example/v1".into(),
+            api_key: Some("saved-test-key".into()),
+            model: "saved-model".into(),
+        },
+    )
+    .await
+    .unwrap();
+    bind(
+        &store_path,
+        temp.path(),
+        &env,
+        agent_id.clone(),
+        Some("gateway".into()),
+    )
+    .await
+    .unwrap();
+    tokio::fs::write(
+        hark_home.join(".credentials.yaml"),
+        "version: 1\nrefs:\n  HARK_API_KEY: rotated-test-key\n",
+    )
+    .await
+    .unwrap();
+    let view = list_with_native(&store_path, agent_id.clone(), Some(&hark_home))
+        .await
+        .unwrap();
+    assert_eq!(view.bound_provider_id.as_deref(), Some("__native_live__"));
+    assert!(
+        !view
+            .providers
+            .iter()
+            .find(|provider| provider.id == "gateway")
+            .unwrap()
+            .bound
+    );
+    assert_eq!(
+        resolve_probe_target(
+            &store_path,
+            temp.path(),
+            &env,
+            &agent_id,
+            Some("gateway"),
+            None,
+            None
+        )
+        .await
+        .unwrap()
+        .1,
+        "saved-test-key"
+    );
+    assert_eq!(
+        resolve_probe_target(
+            &store_path,
+            temp.path(),
+            &env,
+            &agent_id,
+            Some("__native_live__"),
+            None,
+            None
+        )
+        .await
+        .unwrap()
+        .1,
+        "rotated-test-key"
+    );
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn hark_unbind_rolls_back_when_the_second_native_file_is_locked() {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let temp = tempfile::tempdir().unwrap();
+    let hark_home = temp.path().join(".hark/agent");
+    let store_path = temp.path().join("providers.json");
+    let agent_id = AgentId::parse("hark").unwrap();
+    let env = HashMap::from([(
+        "HARK_HOME".to_string(),
+        hark_home.to_string_lossy().to_string(),
+    )]);
+    save(
+        &store_path,
+        temp.path(),
+        &env,
+        AgentModelProviderSaveRequest {
+            id: Some("gateway".into()),
+            name: "Gateway".into(),
+            agent_id: agent_id.clone(),
+            api_url: "https://gateway.example/v1".into(),
+            api_key: Some("test-key".into()),
+            model: "test-model".into(),
+        },
+    )
+    .await
+    .unwrap();
+    bind(
+        &store_path,
+        temp.path(),
+        &env,
+        agent_id.clone(),
+        Some("gateway".into()),
+    )
+    .await
+    .unwrap();
+    let settings_path = hark_home.join("settings.yaml");
+    let credentials_path = hark_home.join(".credentials.yaml");
+    let settings_before = tokio::fs::read(&settings_path).await.unwrap();
+    let credentials_before = tokio::fs::read(&credentials_path).await.unwrap();
+    let store_before = tokio::fs::read(&store_path).await.unwrap();
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(1)
+        .open(&credentials_path)
+        .unwrap();
+    assert!(
+        bind(&store_path, temp.path(), &env, agent_id.clone(), None)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        tokio::fs::read(&settings_path).await.unwrap(),
+        settings_before
+    );
+    assert_eq!(
+        tokio::fs::read(&credentials_path).await.unwrap(),
+        credentials_before
+    );
+    assert_eq!(tokio::fs::read(&store_path).await.unwrap(), store_before);
+    assert_eq!(
+        list_with_native(&store_path, agent_id.clone(), Some(&hark_home))
+            .await
+            .unwrap()
+            .bound_provider_id
+            .as_deref(),
+        Some("gateway")
+    );
+    drop(lock);
+    bind(&store_path, temp.path(), &env, agent_id, None)
+        .await
+        .unwrap();
+    assert!(!settings_path.exists());
+    assert!(!credentials_path.exists());
+}
+
 fn codex_catalog_cache(store_path: &Path) -> std::path::PathBuf {
     store_path
         .parent()

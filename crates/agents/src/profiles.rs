@@ -521,6 +521,7 @@ impl BuiltInProfileCatalog {
                 grok_profile(),
                 cursor_profile(),
                 deepseek_harness_profile(),
+                hark_profile(),
                 antigravity_profile(),
                 cline_profile(),
                 openclaw_profile(),
@@ -2394,6 +2395,30 @@ const DEEPSEEK_HARNESS_CONFIG: &[NativeConfigBinding] = &[
     },
 ];
 
+const HARK_CONFIG: &[NativeConfigBinding] = &[
+    NativeConfigBinding {
+        binding_id: "credentials",
+        home_relative_path: ".hark/agent/.credentials.yaml",
+        directory_override_env: Some("HARK_HOME"),
+        override_relative_path: ".credentials.yaml",
+        format: NativeConfigFormat::Yaml,
+        fields: &[authentication(secret_field(
+            "hark_api_key",
+            "API Key",
+            "Hark Provider API Key",
+            &["refs", "HARK_API_KEY"],
+        ))],
+    },
+    NativeConfigBinding {
+        binding_id: "settings",
+        home_relative_path: ".hark/agent/settings.yaml",
+        directory_override_env: Some("HARK_HOME"),
+        override_relative_path: "settings.yaml",
+        format: NativeConfigFormat::Yaml,
+        fields: &[],
+    },
+];
+
 const QODER_CONFIG: &[NativeConfigBinding] = &[NativeConfigBinding {
     binding_id: "settings",
     home_relative_path: ".qoder/settings.json",
@@ -3389,6 +3414,25 @@ fn deepseek_harness_profile() -> BuiltInProfile {
         authentication_required_by_default: true,
         account_evidence: None,
     }
+}
+
+fn hark_profile() -> BuiltInProfile {
+    let mut profile = deepseek_harness_profile();
+    profile.agent_id = AgentId::parse("hark").expect("bundled AgentId");
+    profile.display_name = "Hark";
+    profile.description = "Hark coding agent with a custom model provider";
+    profile.icon = ProfileIcon {
+        light: "/agents/hark-light.svg",
+        dark: "/agents/hark-dark.svg",
+    };
+    profile.registry_binding = None;
+    profile.management_actions = &[];
+    profile.native_config = HARK_CONFIG;
+    profile.settings_features = &[
+        AgentSettingsFeature::AuthenticationMode,
+        AgentSettingsFeature::ReusableModelProviders,
+    ];
+    profile
 }
 
 fn community_managed_profiles() -> Vec<BuiltInProfile> {

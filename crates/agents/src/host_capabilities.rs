@@ -17,7 +17,7 @@ pub(crate) fn build_client_capabilities(agent_id: &AgentId) -> ClientCapabilitie
     );
     if matches!(
         kind,
-        Some(AgentKind::Codex | AgentKind::DeepseekHarness | AgentKind::Qoder)
+        Some(AgentKind::Codex | AgentKind::DeepseekHarness | AgentKind::Hark | AgentKind::Qoder)
     ) {
         client_capabilities = client_capabilities
             .elicitation(ElicitationCapabilities::new().form(ElicitationFormCapabilities::new()));
@@ -91,8 +91,8 @@ mod tests {
     }
 
     #[test]
-    fn form_elicitation_is_advertised_only_to_codex_deepseek_and_qoder() {
-        for id in ["codex", "deepseek_harness", "qoder"] {
+    fn form_elicitation_is_advertised_only_to_capable_agents() {
+        for id in ["codex", "deepseek_harness", "hark", "qoder"] {
             let caps = caps_of(id);
             assert!(
                 caps.get("elicitation").is_some(),

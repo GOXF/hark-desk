@@ -106,6 +106,14 @@ pub fn built_in_auth_mode_policy(agent_id: &AgentId) -> Option<BuiltInAuthModePo
             subscription_scrub_env: DSH_OFFICIAL_SCRUB_ENV,
             default_mode: "deepseek",
         }),
+        "hark" => Some(BuiltInAuthModePolicy {
+            mode_env: "HARK_AUTH_MODE",
+            credential_env: "HARK_API_KEY",
+            modes: &["model_provider"],
+            credential_modes: &[],
+            subscription_scrub_env: &[],
+            default_mode: "model_provider",
+        }),
         "opencode" => Some(BuiltInAuthModePolicy {
             mode_env: "OPENCODE_AUTH_MODE",
             credential_env: "OPENCODE_API_KEY",
@@ -726,6 +734,10 @@ pub fn apply_built_in_launch_policy(
         }
         "grok" => apply_grok_native_launch_env(env),
         "deepseek_harness" => apply_dsh_native_launch_env(env),
+        "hark" => {
+            // Launch authorization and the final spawn propagate this result.
+            let _ = crate::apply_hark_native_launch_env(env);
+        }
         // In-process Cline runtime so model switches apply, and no
         // `npm update -g cline` after stdin closes (Codeg pin 3.0.73).
         "cline" => {
@@ -2187,4 +2199,3 @@ mod tests {
         );
     }
 }
-

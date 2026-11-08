@@ -83,7 +83,11 @@ pub(super) fn project(store: &ProviderStore, agent_id: AgentId) -> AgentModelPro
             agent_id: provider.agent_id.clone(),
             api_url: provider.api_url.clone(),
             model: provider.model.clone(),
-            api_key: provider.api_key.clone(),
+            api_key: if agent_id.as_str() == "hark" {
+                String::new()
+            } else {
+                provider.api_key.clone()
+            },
             credential_present: !provider.api_key.is_empty(),
             bound: bound_provider_id.as_deref() == Some(provider.id.as_str()),
             managed: true,

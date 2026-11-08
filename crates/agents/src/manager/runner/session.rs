@@ -116,7 +116,8 @@ impl AgentConnectionRunner {
                         response.meta.as_ref(),
                         session_model_ids(raw_models.as_ref()),
                     )
-                    .await;
+                    .await
+                    .map_err(|error| AgentError::Runtime(error.to_string()))?;
                     *self.pending_session_id.lock().await = None;
                     return Ok((
                         external_session_id,
@@ -194,7 +195,8 @@ impl AgentConnectionRunner {
                     response.meta.as_ref(),
                     session_model_ids(raw_models.as_ref()),
                 )
-                .await;
+                .await
+                .map_err(|error| AgentError::Runtime(error.to_string()))?;
                 Ok((
                     external_session_id,
                     Some(crate::conversation::SessionRecoveryStrategy::Loaded),
@@ -423,7 +425,7 @@ impl AgentConnectionRunner {
             response.meta.as_ref(),
             session_model_ids(raw_models.as_ref()),
         )
-        .await;
+        .await?;
         if self.snapshot.agent_id.as_str() == "zcode"
             && let Err(error) = self
                 .confirm_zcode_backend_session(

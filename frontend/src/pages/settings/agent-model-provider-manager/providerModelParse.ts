@@ -58,7 +58,10 @@ export function writePiReasoning(
   }
 }
 
-export function parsePiModel(value: string): PiModelSpec {
+export function parsePiModel(
+  value: string,
+  fallbackApi: (typeof PI_PROTOCOLS)[number] = 'openai-responses'
+): PiModelSpec {
   try {
     const parsed = JSON.parse(value) as {
       id?: unknown;
@@ -79,7 +82,7 @@ export function parsePiModel(value: string): PiModelSpec {
           typeof parsed.api === 'string' &&
           PI_PROTOCOLS.includes(parsed.api as (typeof PI_PROTOCOLS)[number])
             ? parsed.api
-            : 'openai-responses',
+            : fallbackApi,
         reasoning: reasoningFromModel(
           typeof parsed.reasoning === 'boolean' ? parsed.reasoning : null,
           map
@@ -98,7 +101,7 @@ export function parsePiModel(value: string): PiModelSpec {
   }
   return {
     id: value,
-    api: 'openai-responses',
+    api: fallbackApi,
     reasoning: NO_PI_REASONING,
     thinkingLevel: '',
     raw: {},
@@ -274,8 +277,11 @@ export function serializeSelectedModels(
       models: ids,
     });
   }
-  if (agentId === 'pi') {
-    const parsed = parsePiModel(current);
+  if (agentId === 'pi' || agentId === 'hark') {
+    const parsed = parsePiModel(
+      current,
+      agentId === 'hark' ? 'openai-completions' : 'openai-responses'
+    );
     return JSON.stringify({
       ...parsed.raw,
       id: ids[0] ?? '',

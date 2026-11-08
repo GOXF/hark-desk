@@ -2985,6 +2985,7 @@
       "xhigh": "极高"
     },
     "customProviderProtocol": "接入协议",
+    "harkProviderUrlHint": "OpenAI 通常填写以 /v1 结尾的地址；Anthropic Messages 填写服务根地址，客户端会追加 /v1/messages。",
     "piRuntimeCommandRequired": "自定义 Runtime 需要填写可执行文件。",
     "piRuntimeMode": "Pi Runtime 模式",
     "piRuntimeSaveFailed": "保存 Pi Runtime 配置失败",

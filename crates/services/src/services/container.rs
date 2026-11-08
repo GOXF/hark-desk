@@ -206,6 +206,7 @@ fn acp_slash_command_catalog(agent_type: AgentKind) -> Vec<SlashCommandDescripti
         | AgentKind::Grok
         | AgentKind::Cursor
         | AgentKind::DeepseekHarness
+        | AgentKind::Hark
         | AgentKind::Qoder
         | AgentKind::Kiro
         | AgentKind::Auggie

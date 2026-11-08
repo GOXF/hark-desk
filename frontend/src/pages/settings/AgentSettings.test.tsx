@@ -763,6 +763,76 @@ describe('AgentSettings', () => {
     ).toBeVisible();
   });
 
+  it('shows Hark in the Agent bar with the shared custom-provider entry', async () => {
+    api.bar.mockResolvedValue([
+      {
+        agent_id: 'hark',
+        display_name: 'Hark',
+        description: 'Hark API agent',
+        icon_light: null,
+        icon_dark: null,
+        icon_svg: null,
+        source: 'built_in_profile',
+        built_in: true,
+        retired: false,
+        enabled: true,
+        position: 0,
+        lifecycle: 'ready',
+        authentication: 'api_key',
+        runtime_version: null,
+        acp_version: '0.9.0',
+        active_operation: null,
+        rollback_available: false,
+        settings_features: ['authentication_mode', 'reusable_model_providers'],
+      },
+    ]);
+    api.readConfig.mockResolvedValue({
+      agent_id: 'hark',
+      available: true,
+      settings_features: ['authentication_mode', 'reusable_model_providers'],
+      path: '/tmp/.hark/agent/settings.yaml',
+      paths: ['/tmp/.hark/agent/settings.yaml'],
+      fields: [],
+      files: [],
+      applies_to_next_session: true,
+    });
+    api.modelProviders.mockResolvedValue({
+      agent_id: 'hark',
+      providers: [],
+      bound_provider_id: null,
+    });
+    api.authMode.mockResolvedValue({
+      agent_id: 'hark',
+      mode: 'model_provider',
+      modes: ['model_provider'],
+      options: [
+        {
+          value: 'model_provider',
+          kind: 'provider',
+          label_key: 'agents.authModeProvider',
+          description_key: '',
+          credential_env: null,
+          credential_required: false,
+          native_config_field_id: null,
+          official_api_url: null,
+        },
+      ],
+      credential_env: 'HARK_API_KEY',
+      credential_present: true,
+    });
+    render(<AgentSettings />);
+    expect(await screen.findByRole('button', { name: 'Hark' })).toBeVisible();
+    const auth = await screen.findByRole('region', { name: '鉴权管理' });
+    expect(auth).toContainElement(
+      await screen.findByRole('heading', { name: '模型供应商' })
+    );
+    expect(
+      screen.getAllByRole('button', { name: '新建供应商' })[0]
+    ).toBeEnabled();
+    expect(api.modelProviders).toHaveBeenCalledWith('hark');
+    expect(api.dshProviders).not.toHaveBeenCalled();
+  });
+
   it('places Pi plugins in a collapsed section and Provider form in authentication', async () => {
     api.bar.mockResolvedValue([
       {

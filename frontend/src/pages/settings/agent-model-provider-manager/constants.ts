@@ -24,3 +24,9 @@ export const PI_PROTOCOLS = [
   'anthropic-messages',
   'google-generative-ai',
 ] as const;
+
+export const HARK_PROTOCOLS = [
+  'openai-completions',
+  'openai-responses',
+  'anthropic-messages',
+] as const;

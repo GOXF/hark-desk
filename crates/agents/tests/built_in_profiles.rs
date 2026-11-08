@@ -697,6 +697,7 @@ fn built_in_profiles_are_declarative_and_bind_explicitly() {
             "grok",
             "cursor",
             "deepseek_harness",
+            "hark",
             "antigravity",
             "cline",
             "openclaw",
@@ -801,6 +802,7 @@ fn built_in_profiles_are_declarative_and_bind_explicitly() {
             ("grok", None),
             ("cursor", None),
             ("deepseek_harness", None),
+            ("hark", None),
             ("antigravity", None),
             ("cline", None),
             ("openclaw", None),
@@ -1465,4 +1467,3 @@ fn omp_native_config_exposes_approval_mode_select_field() {
         ["always-ask", "always-ask-cached", "write", "yolo"]
     );
 }
-

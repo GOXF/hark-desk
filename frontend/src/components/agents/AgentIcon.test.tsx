@@ -12,6 +12,7 @@ describe('AgentIcon', () => {
     ['codebuddy', 'CodeBuddy', '/agents/codebuddy.svg'],
     ['kimi_code', 'Kimi Code', '/agents/kimi.svg'],
     ['grok', 'Grok', '/agents/grok.svg'],
+    ['hark', 'Hark', '/agents/hark-light.svg'],
     ['cursor', 'Cursor', '/agents/cursor-light.svg'],
     [
       'deepseek_harness',

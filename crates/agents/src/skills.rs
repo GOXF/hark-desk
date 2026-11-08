@@ -102,7 +102,7 @@ pub fn skills_surface(agent_type: AgentKind) -> AgentSkillsSurface {
             global_supported: true,
             project_supported: false,
         },
-        AgentKind::QaMock => AgentSkillsSurface {
+        AgentKind::Hark | AgentKind::QaMock => AgentSkillsSurface {
             agent_type,
             strategy: AgentSkillsStrategy::Unsupported,
             global_supported: false,
@@ -475,7 +475,7 @@ fn skill_dirs(agent: AgentKind, workspace: Option<&Path>) -> Vec<SkillDir> {
             .into_iter()
             .map(|dir| (dir.join("skills"), false))
             .collect(),
-        AgentKind::QaMock => Vec::new(),
+        AgentKind::Hark | AgentKind::QaMock => Vec::new(),
     };
     for (path, read_only) in globals {
         out.push(SkillDir {
@@ -513,7 +513,7 @@ fn skill_dirs(agent: AgentKind, workspace: Option<&Path>) -> Vec<SkillDir> {
             AgentKind::CommandCode => &[".commandcode/skills", ".agents/skills"],
             AgentKind::ZCode => &[".zcode/skills", ".agents/skills"],
             AgentKind::Omp => &[".agents/skills"],
-            AgentKind::QaMock => &[],
+            AgentKind::Hark | AgentKind::QaMock => &[],
         };
         for relative in relatives {
             let mut path = project_base.clone();
@@ -1199,7 +1199,7 @@ fn agent_primary_skill_dir(agent: AgentKind) -> Option<PathBuf> {
         .map(|dir| dir.join("skills")),
         AgentKind::ZCode => zcode_home().map(|dir| dir.join("skills")),
         AgentKind::Omp => omp_skill_agent_dir(home.as_deref()).map(|dir| dir.join("skills")),
-        AgentKind::QaMock => None,
+        AgentKind::Hark | AgentKind::QaMock => None,
     }
 }
 

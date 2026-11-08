@@ -17,6 +17,31 @@ use tokio::{
 
 type FixtureStdout = Arc<Mutex<tokio::io::Stdout>>;
 
+fn hark_model_options(current: &str, reasoning: &str) -> Value {
+    json!([{
+        "id": "model", "name": "Model", "category": "model", "type": "select",
+        "currentValue": current,
+        "options": [
+            {"group": "deepseek-official", "name": "DeepSeek", "options": [
+                {"value": "deepseek-official::chosen", "name": "Unofficial chosen"},
+                {"value": "deepseek-official::deepseek-flash", "name": "DeepSeek Flash"}
+            ]},
+            {"group": "vibex", "name": "Configured", "options": [
+                {"value": "vibex::chosen", "name": "Chosen"},
+                {"value": "vibex::second-model", "name": "Second"},
+                {"value": "vibex::unconfigured-model", "name": "Not configured"}
+            ]}
+        ]
+    }, {
+        "id": "reasoning", "name": "Reasoning", "category": "model", "type": "select",
+        "currentValue": reasoning,
+        "options": [
+            {"value": "off", "name": "Off"},
+            {"value": "high", "name": "High"}
+        ]
+    }])
+}
+
 async fn respond(stdout: &FixtureStdout, response: Value) -> std::io::Result<()> {
     let mut stdout = stdout.lock().await;
     stdout.write_all(response.to_string().as_bytes()).await?;
@@ -33,6 +58,9 @@ async fn main() -> std::io::Result<()> {
     let session_discovery = std::env::var_os("VIBEX_FIXTURE_SESSION_DISCOVERY").is_some();
     let additional_directories_mode = std::env::var("VIBEX_FIXTURE_ADDITIONAL_DIRECTORIES").ok();
     let mcp_http_mode = std::env::var("VIBEX_FIXTURE_MCP_HTTP").ok();
+    let hark_models = std::env::var_os("VIBEX_FIXTURE_HARK_MODELS").is_some();
+    let mut hark_model = "vibex::chosen".to_string();
+    let mut hark_reasoning = "off".to_string();
 
     while let Some(line) = lines.next_line().await? {
         let Ok(message) = serde_json::from_str::<Value>(&line) else {
@@ -172,6 +200,32 @@ async fn main() -> std::io::Result<()> {
                     "jsonrpc": "2.0",
                     "id": id,
                     "error": {"code": -32602, "message": "unadvertised HTTP MCP sent"}
+                })
+            }
+            "session/new" if hark_models => json!({
+                "jsonrpc": "2.0", "id": id,
+                "result": {"sessionId": "fixture-session", "configOptions": hark_model_options(&hark_model, &hark_reasoning)}
+            }),
+            "session/resume" | "session/load" if hark_models => json!({
+                "jsonrpc": "2.0", "id": id,
+                "result": {"configOptions": hark_model_options(
+                    "deepseek-official::chosen", &hark_reasoning
+                )}
+            }),
+            "session/set_config_option" if hark_models => {
+                let value = message
+                    .pointer("/params/value")
+                    .and_then(Value::as_str)
+                    .unwrap_or("invalid");
+                if message.pointer("/params/configId").and_then(Value::as_str) == Some("reasoning")
+                {
+                    hark_reasoning = value.to_string();
+                } else {
+                    hark_model = value.to_string();
+                }
+                json!({
+                    "jsonrpc": "2.0", "id": id,
+                    "result": {"configOptions": hark_model_options(&hark_model, &hark_reasoning)}
                 })
             }
             "session/new" => json!({

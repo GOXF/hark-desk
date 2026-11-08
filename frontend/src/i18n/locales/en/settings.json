@@ -2985,6 +2985,7 @@
       "xhigh": "Extra high"
     },
     "customProviderProtocol": "Wire protocol",
+    "harkProviderUrlHint": "OpenAI endpoints usually end in /v1. For Anthropic Messages, use the service root; the client appends /v1/messages.",
     "piRuntimeCommandRequired": "A custom Runtime requires an executable.",
     "piRuntimeMode": "Pi Runtime mode",
     "piRuntimeSaveFailed": "Unable to save the Pi Runtime configuration",

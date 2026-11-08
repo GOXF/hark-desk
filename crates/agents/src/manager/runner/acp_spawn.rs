@@ -93,6 +93,16 @@ impl AgentConnectionRunner {
         for (key, value) in &launch_lock.env {
             launch_env.insert(key.clone(), value.clone());
         }
+        if self.snapshot.agent_id.as_str() == "hark" {
+            launch_env.remove("HARK_HOME");
+            if let Some(home) = self.snapshot.env.get("HARK_HOME") {
+                launch_env.insert("HARK_HOME".to_string(), home.clone());
+            }
+            for key in crate::hark_native::HARK_RUNTIME_ENV_KEYS {
+                command.env_remove(*key);
+            }
+            crate::apply_hark_native_launch_env(&mut launch_env).map_err(AgentError::Runtime)?;
+        }
         crate::sanitize_runtime_executable_env(&self.snapshot.agent_id, &mut launch_env);
         for key in crate::bundled_adapter_runtime_env_keys(&self.snapshot.agent_id) {
             command.env_remove(*key);

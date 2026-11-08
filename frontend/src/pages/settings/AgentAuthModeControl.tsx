@@ -1002,6 +1002,8 @@ function agentDisplayName(agentId: AgentId) {
       return 'Google Antigravity';
     case 'deepseek_harness':
       return 'DeepSeek Harness';
+    case 'hark':
+      return 'Hark';
     case 'opencode':
       return 'OpenCode';
     case 'hermes':
