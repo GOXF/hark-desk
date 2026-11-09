@@ -36,6 +36,15 @@
 //! 所有脚本都是同步的、返回 `JSON.stringify(...)`：WebView2 的 ExecuteScript 和
 //! WKWebView 的 evaluateJavaScript 都不会等 Promise，异步脚本拿回来的是 `{}`。
 //!
+//! ## Hark 独立窗口（hark_window）
+//!
+//! Hark 账号改成宿主直建的 wry 子 WebView（`hark_window`）后，账号的登录状态在
+//! `<数据目录>/hark-profiles/<id>`，内置浏览器的 `BrowserService` 里没有它。所以：
+//! 账号在 Hark 窗口账号列表里、且 Hark 窗口开着时，**优先**走窗口这条路
+//! （`hark_window_inject`：复用停在项目页的账号 WebView，否则在窗口上开隐藏的
+//! 后台 WebView，用完销毁），流程 1–6 不变；否则回退上面的内置浏览器路径。
+//! 一旦走了窗口路径就不再回退（内置浏览器里没有这个账号的登录，回退只会误报）。
+//!
 //! 日志只记 profile、标签 id、长度和阶段，不记消息正文和连接地址（里面有密钥）。
 
 use std::{
@@ -49,6 +58,7 @@ use tauri::Manager;
 use url::Url;
 
 use crate::browser_native::HostBrowserService;
+use crate::hark_window_inject::{self, ViewRef};
 
 /// 单次页面求值的超时。
 const EVAL_TIMEOUT: Duration = Duration::from_secs(10);
@@ -100,11 +110,6 @@ pub async fn send_connect_message(
     let origin = browser_host::grant::origin_of(&target)
         .ok_or_else(|| "项目地址不是 http(s) 地址".to_string())?;
 
-    let service: Arc<BrowserService> = app
-        .try_state::<HostBrowserService>()
-        .map(|state| state.0.clone())
-        .ok_or_else(|| "内置浏览器服务还没就绪".to_string())?;
-
     let _guard = send_lock().lock().await;
     let job = Job {
         origin,
@@ -119,15 +124,99 @@ pub async fn send_connect_message(
         "文件桥：开始向 Hark 项目聊天投递连接消息"
     );
 
+    // 0) Hark 独立窗口优先
+    if hark_window_inject::can_serve(app, profile_id) {
+        return send_via_hark_window(app, profile_id, &target, &job).await;
+    }
+    let result = send_via_browser_service(app, profile_id, &target, &job).await;
+    if result.is_err() && crate::hark_window::has_account(profile_id) {
+        // 账号属于 Hark 独立窗口，但窗口没开：老路径大概率找不到登录状态，给个提示
+        return result
+            .map_err(|error| format!("{error}（该账号在 Hark 窗口里，打开 Hark 窗口后重试）"));
+    }
+    result
+}
+
+/// 走 Hark 独立窗口：先复用停在项目页、输入框空闲的账号 WebView，否则开后台 WebView。
+async fn send_via_hark_window(
+    app: &tauri::AppHandle,
+    profile_id: &str,
+    target: &Url,
+    job: &Job,
+) -> Result<(), String> {
+    // 1) 账号 WebView 已停在目标项目页
+    let account = ViewRef::Account(profile_id.to_owned());
+    if let Some(url) = hark_window_inject::view_url(app, &account).await
+        && job.is_target_url(&url)
+    {
+        let page = Page::Window {
+            app,
+            view: &account,
+        };
+        match inspect(&page, job).await {
+            Ok(Composer::Ready) => {
+                tracing::info!(profile_id, page = %page.label(), "文件桥：复用 Hark 窗口里已打开的项目页");
+                return deliver(&page, job, false).await;
+            }
+            Ok(state) => {
+                tracing::info!(
+                    profile_id,
+                    ?state,
+                    "文件桥：Hark 窗口里的项目页不可用，改用后台 WebView"
+                );
+            }
+            Err(error) => {
+                tracing::info!(profile_id, %error, "文件桥：Hark 窗口里的项目页求值失败，改用后台 WebView");
+            }
+        }
+    }
+
+    // 2) 后台 WebView：同一账号数据目录、隐藏、无 IPC、用完销毁
+    let view =
+        hark_window_inject::open_background(app, profile_id, target.as_str(), FIRST_LOAD_WAIT)
+            .await
+            .map_err(|error| format!("后台页面打不开：{error}"))?;
+    let page = Page::Window { app, view: &view };
+    tracing::info!(profile_id, page = %page.label(), "文件桥：已在 Hark 窗口后台 WebView 打开项目页");
+    let result = deliver(&page, job, true).await;
+    if result.is_ok() {
+        tokio::time::sleep(CLOSE_GRACE).await;
+    }
+    if let Err(error) = hark_window_inject::close_background(app, &view).await {
+        tracing::warn!(page = %page.label(), %error, "文件桥：关闭后台 WebView 失败");
+    }
+    match &result {
+        Ok(()) => tracing::info!(profile_id, "文件桥：连接消息已发送并回读确认（Hark 窗口）"),
+        Err(error) => tracing::warn!(profile_id, %error, "文件桥：连接消息投递失败（Hark 窗口）"),
+    }
+    result
+}
+
+/// 原路径：内置浏览器（`BrowserService`）里的标签。
+async fn send_via_browser_service(
+    app: &tauri::AppHandle,
+    profile_id: &str,
+    target: &Url,
+    job: &Job,
+) -> Result<(), String> {
+    let service: Arc<BrowserService> = app
+        .try_state::<HostBrowserService>()
+        .map(|state| state.0.clone())
+        .ok_or_else(|| "内置浏览器服务还没就绪".to_string())?;
+
     // 1) 复用已停在目标项目页、输入框空闲的标签
     for tab in service.host_tabs_of_profile(profile_id) {
         if tab.loading || !job.is_target_url(&tab.url) {
             continue;
         }
-        match inspect(&service, &tab.tab_id, &job).await {
+        let page = Page::Tab {
+            service: &service,
+            tab_id: &tab.tab_id,
+        };
+        match inspect(&page, job).await {
             Ok(Composer::Ready) => {
                 tracing::info!(profile_id, tab_id = %tab.tab_id, "文件桥：复用已打开的项目标签");
-                return deliver(&service, &tab.tab_id, &job, false).await;
+                return deliver(&page, job, false).await;
             }
             Ok(state) => {
                 tracing::info!(profile_id, tab_id = %tab.tab_id, ?state, "文件桥：已打开的项目标签不可用，改用后台标签");
@@ -149,7 +238,15 @@ pub async fn send_connect_message(
         .await
         .map_err(|error| format!("后台页面打不开：{error}"))?;
     tracing::info!(profile_id, tab_id = %tab.tab_id, "文件桥：已在后台标签打开项目页");
-    let result = deliver(&service, &tab.tab_id, &job, true).await;
+    let result = deliver(
+        &Page::Tab {
+            service: &service,
+            tab_id: &tab.tab_id,
+        },
+        job,
+        true,
+    )
+    .await;
     if result.is_ok() {
         tokio::time::sleep(CLOSE_GRACE).await;
     }
@@ -221,17 +318,39 @@ enum Composer {
     WrongPage,
 }
 
+/// 求值落在哪个页面上：内置浏览器标签，或 Hark 独立窗口里的 WebView。
+enum Page<'a> {
+    Tab {
+        service: &'a BrowserService,
+        tab_id: &'a str,
+    },
+    Window {
+        app: &'a tauri::AppHandle,
+        view: &'a ViewRef,
+    },
+}
+
+impl Page<'_> {
+    /// 日志用标识（不含地址）。
+    fn label(&self) -> String {
+        match self {
+            Page::Tab { tab_id, .. } => (*tab_id).to_owned(),
+            Page::Window { view, .. } => view.label(),
+        }
+    }
+}
+
 /// 在页面里求值并把结果解析成 JSON。
-async fn eval_json(
-    service: &BrowserService,
-    tab_id: &str,
-    job: &Job,
-    script: &str,
-) -> Result<Value, String> {
-    let raw = service
-        .host_eval_on_origin(tab_id, &job.origin, script, EVAL_TIMEOUT)
-        .await
-        .map_err(|error| error.to_string())?;
+async fn eval_json(page: &Page<'_>, job: &Job, script: &str) -> Result<Value, String> {
+    let raw = match page {
+        Page::Tab { service, tab_id } => service
+            .host_eval_on_origin(tab_id, &job.origin, script, EVAL_TIMEOUT)
+            .await
+            .map_err(|error| error.to_string())?,
+        Page::Window { app, view } => {
+            hark_window_inject::eval_on_origin(app, view, &job.origin, script, EVAL_TIMEOUT).await?
+        }
+    };
     let decoded = browser_host::agent::decode_eval_result(&raw);
     serde_json::from_str::<Value>(&decoded)
         .map_err(|error| format!("页面返回的结果无法解析：{error}"))
@@ -241,8 +360,8 @@ fn flag(value: &Value, key: &str) -> bool {
     value.get(key).and_then(Value::as_bool).unwrap_or(false)
 }
 
-async fn inspect(service: &BrowserService, tab_id: &str, job: &Job) -> Result<Composer, String> {
-    let value = eval_json(service, tab_id, job, &script(job, ACTION_INSPECT)).await?;
+async fn inspect(page: &Page<'_>, job: &Job) -> Result<Composer, String> {
+    let value = eval_json(page, job, &script(job, ACTION_INSPECT)).await?;
     Ok(if flag(&value, "wrongPage") {
         Composer::WrongPage
     } else if flag(&value, "busy") {
@@ -254,32 +373,31 @@ async fn inspect(service: &BrowserService, tab_id: &str, job: &Job) -> Result<Co
     })
 }
 
-async fn marker_in_page(service: &BrowserService, tab_id: &str, job: &Job) -> bool {
-    match eval_json(service, tab_id, job, &script(job, ACTION_IN_PAGE)).await {
+async fn marker_in_page(page: &Page<'_>, job: &Job) -> bool {
+    match eval_json(page, job, &script(job, ACTION_IN_PAGE)).await {
         Ok(value) => value.as_bool().unwrap_or(false),
         Err(_) => false,
     }
 }
 
 /// 在指定标签里完成「等输入框 → 去重 → 填入 → 发送 → 回读确认」。
-async fn deliver(
-    service: &BrowserService,
-    tab_id: &str,
-    job: &Job,
-    wait_for_composer: bool,
-) -> Result<(), String> {
+async fn deliver(page: &Page<'_>, job: &Job, wait_for_composer: bool) -> Result<(), String> {
+    let tab_id = page.label();
+    let tab_id = tab_id.as_str();
     // 等输入框
     let polls = if wait_for_composer { COMPOSER_POLLS } else { 1 };
     let mut last = Composer::Missing;
     let mut last_error: Option<String> = None;
     for attempt in 0..polls {
-        match inspect(service, tab_id, job).await {
+        match inspect(page, job).await {
             Ok(Composer::Ready) => {
                 last = Composer::Ready;
                 break;
             }
             Ok(Composer::Busy) => {
-                return Err("项目聊天的输入框里已有内容（草稿或正在输入），为保留草稿已停止发送".into());
+                return Err(
+                    "项目聊天的输入框里已有内容（草稿或正在输入），为保留草稿已停止发送".into(),
+                );
             }
             Ok(state) => last = state,
             Err(error) => last_error = Some(error),
@@ -299,30 +417,35 @@ async fn deliver(
     }
 
     // 对话里已经有这条地址 = 之前发过了，不重复发
-    if marker_in_page(service, tab_id, job).await {
+    if marker_in_page(page, job).await {
         tracing::info!(tab_id, "文件桥：对话里已有该连接地址，视为已连接，不重发");
         return Ok(());
     }
 
     // 填入
-    let filled = eval_json(service, tab_id, job, &script(job, ACTION_FILL)).await?;
+    let filled = eval_json(page, job, &script(job, ACTION_FILL)).await?;
     if flag(&filled, "busy") {
         return Err("项目聊天的输入框里已有内容（草稿或正在输入），为保留草稿已停止发送".into());
     }
     if !flag(&filled, "ok") {
         return Err(format!(
             "连接消息没能填进输入框（{}）",
-            filled.get("code").and_then(Value::as_str).unwrap_or("unknown")
+            filled
+                .get("code")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
         ));
     }
     tokio::time::sleep(FILL_SETTLE).await;
 
     // 发送
-    let sent = eval_json(service, tab_id, job, &script(job, ACTION_SEND)).await?;
+    let sent = eval_json(page, job, &script(job, ACTION_SEND)).await?;
     if !flag(&sent, "ok") {
         return Err(format!(
             "没能点击发送（{}），消息留在输入框里",
-            sent.get("code").and_then(Value::as_str).unwrap_or("unknown")
+            sent.get("code")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
         ));
     }
     let clicked_at = Instant::now();
@@ -332,21 +455,23 @@ async fn deliver(
     let mut reclicked = false;
     loop {
         tokio::time::sleep(POLL_INTERVAL).await;
-        if marker_in_page(service, tab_id, job).await {
+        if marker_in_page(page, job).await {
             return Ok(());
         }
         if !reclicked && clicked_at.elapsed() >= RESEND_CLICK_AFTER {
             // 点完一会儿输入框里还原样留着这段文字 = 第一次点击没提交，补点一次（只补一次）
-            if let Ok(left) = eval_json(service, tab_id, job, &script(job, ACTION_LEFT)).await
+            if let Ok(left) = eval_json(page, job, &script(job, ACTION_LEFT)).await
                 && flag(&left, "same")
             {
                 reclicked = true;
                 tracing::info!(tab_id, "文件桥：输入框里仍是原文，补点一次发送");
-                let _ = eval_json(service, tab_id, job, &script(job, ACTION_SEND)).await;
+                let _ = eval_json(page, job, &script(job, ACTION_SEND)).await;
             }
         }
         if clicked_at.elapsed() >= CONFIRM_TIMEOUT {
-            return Err("已点击发送，但 20 秒内没在对话里看到连接地址；为避免重复发送已停止".into());
+            return Err(
+                "已点击发送，但 20 秒内没在对话里看到连接地址；为避免重复发送已停止".into(),
+            );
         }
     }
 }
@@ -499,7 +624,13 @@ mod tests {
     #[test]
     fn scripts_embed_args_as_json_and_stay_one_expression() {
         let job = job();
-        for action in [ACTION_INSPECT, ACTION_FILL, ACTION_SEND, ACTION_LEFT, ACTION_IN_PAGE] {
+        for action in [
+            ACTION_INSPECT,
+            ACTION_FILL,
+            ACTION_SEND,
+            ACTION_LEFT,
+            ACTION_IN_PAGE,
+        ] {
             let js = script(&job, action);
             assert!(js.starts_with("(function(){try{"));
             assert!(js.ends_with("}})()"));
