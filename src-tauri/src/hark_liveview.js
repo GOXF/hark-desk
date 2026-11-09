@@ -1,7 +1,7 @@
 // Hark Desk：hark.com 云电脑画面「放大 / 弹出」。
 // 只在 hark.com 及其子域生效。云电脑画面由 Hark 服务器渲染，只能看不能操作；
 // 这里只改变显示大小，不向画面发送任何输入。
-// 识别规则是启发式的（够大的 iframe / canvas / video），拿到真实 DOM 后再收紧选择器：
+// 识别规则是启发式的（够大但不铺满窗口的 iframe / canvas / video），拿到真实 DOM 后再收紧选择器：
 // 改 LIVEVIEW_SELECTORS 即可。
 (() => {
   try {
@@ -22,12 +22,11 @@
 
   const style = document.createElement("style");
   style.textContent = `
-    [${MARK}-wrap] { position: relative !important; }
     .hark-liveview-btns {
-      position: absolute; top: 6px; right: 6px; z-index: 2147483646;
-      display: flex; gap: 4px; opacity: .25; transition: opacity .15s;
+      position: fixed; z-index: 2147483646;
+      display: flex; gap: 4px; opacity: .35; transition: opacity .15s;
     }
-    [${MARK}-wrap]:hover .hark-liveview-btns, .hark-liveview-btns:hover { opacity: 1; }
+    .hark-liveview-btns:hover { opacity: 1; }
     .hark-liveview-btns button {
       font: 12px/1 system-ui, sans-serif; padding: 5px 8px; border: 0; border-radius: 6px;
       background: rgba(0,0,0,.65); color: #fff; cursor: pointer;
@@ -38,10 +37,44 @@
       z-index: 2147483645 !important; background: #000 !important; object-fit: contain !important;
       border-radius: 0 !important; transform: none !important;
     }
-    .hark-liveview-btns.${BIG}-btns { position: fixed; top: 10px; right: 10px; opacity: 1; z-index: 2147483647; }
+    .hark-liveview-btns.${BIG}-btns { top: 10px !important; right: 10px !important; left: auto !important; opacity: 1; z-index: 2147483647; }
   `;
 
   let current = null; // 当前放大的元素
+  // 按钮不再塞进页面元素里（以前给父元素加 position:relative，会把登录页背景挤乱），
+  // 而是挂在 body 上的 fixed 浮层，按元素位置摆放。
+  const decorated = []; // { el, btns }
+  const MAX_VIEWPORT_SHARE = 0.6; // 占满大半个窗口的多半是页面背景动画，不是云电脑画面
+
+  function place() {
+    const vw = window.innerWidth, vh = window.innerHeight;
+    for (let i = decorated.length - 1; i >= 0; i--) {
+      const d = decorated[i];
+      if (!d.el.isConnected) {
+        d.btns.remove();
+        decorated.splice(i, 1);
+        continue;
+      }
+      if (current && current.el === d.el) continue;
+      const r = d.el.getBoundingClientRect();
+      const visible = r.width >= MIN_W && r.height >= MIN_H && r.bottom > 0 && r.top < vh && r.right > 0 && r.left < vw;
+      d.btns.style.display = visible ? "flex" : "none";
+      if (visible) {
+        d.btns.style.top = `${Math.max(r.top, 0) + 6}px`;
+        d.btns.style.left = "auto";
+        d.btns.style.right = `${Math.max(vw - Math.min(r.right, vw), 0) + 6}px`;
+      }
+    }
+  }
+  let placing = false;
+  function schedulePlace() {
+    if (placing) return;
+    placing = true;
+    requestAnimationFrame(() => {
+      placing = false;
+      place();
+    });
+  }
 
   function exitBig() {
     if (!current) return;
@@ -49,6 +82,7 @@
     current.btns.classList.remove(`${BIG}-btns`);
     current.bigBtn.textContent = "⛶ 放大";
     current = null;
+    schedulePlace();
   }
 
   function enterBig(el, btns, bigBtn) {
@@ -77,10 +111,9 @@
     if (el.hasAttribute(MARK)) return;
     const r = el.getBoundingClientRect();
     if (r.width < MIN_W || r.height < MIN_H) return;
-    const parent = el.parentElement;
-    if (!parent) return;
+    if (r.width * r.height > window.innerWidth * window.innerHeight * MAX_VIEWPORT_SHARE) return;
+    if (getComputedStyle(el).pointerEvents === "none") return;
     el.setAttribute(MARK, "1");
-    parent.setAttribute(`${MARK}-wrap`, "1");
 
     const btns = document.createElement("div");
     btns.className = "hark-liveview-btns";
@@ -110,7 +143,8 @@
       });
       btns.appendChild(popBtn);
     }
-    parent.appendChild(btns);
+    document.body.appendChild(btns);
+    decorated.push({ el, btns });
   }
 
   function scan() {
@@ -118,6 +152,7 @@
       for (const el of document.querySelectorAll(sel)) decorate(el);
     }
     if (current && !current.el.isConnected) current = null;
+    schedulePlace();
   }
 
   function start() {
@@ -133,6 +168,7 @@
       }, 500);
     }).observe(document.documentElement, { childList: true, subtree: true });
     window.addEventListener("resize", scan);
+    window.addEventListener("scroll", schedulePlace, true);
     document.addEventListener(
       "keydown",
       (e) => {
