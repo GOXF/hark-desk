@@ -773,6 +773,7 @@ pub fn run() {
         hark_window::hark_accounts_remove,
         hark_window::hark_window_open,
         hark_window::hark_window_action,
+        hark_window::hark_window_set_dock,
         hark_bridge::commands::hark_bridge_state,
         hark_bridge::commands::hark_bridge_tunnel_save,
         hark_bridge::commands::hark_bridge_create,

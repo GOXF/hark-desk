@@ -11,6 +11,8 @@ export type HarkAccountsState = {
   active: string | null;
   opened: string[];
   windowOpen: boolean;
+  /** Hark 窗口是否吸附在主窗口右侧。 */
+  docked: boolean;
 };
 
 export type HarkWindowAction =
@@ -32,6 +34,7 @@ const EMPTY: HarkAccountsState = {
   active: null,
   opened: [],
   windowOpen: false,
+  docked: true,
 };
 
 async function call<T>(cmd: string, args?: Record<string, unknown>) {
@@ -52,6 +55,8 @@ export const harkWindowApi = {
   open: (id?: string) => call<void>('hark_window_open', { id: id ?? null }),
   action: (action: HarkWindowAction) =>
     call<void>('hark_window_action', { action }),
+  setDock: (enabled: boolean) =>
+    call<void>('hark_window_set_dock', { enabled }),
 };
 
 /** 订阅账号列表；后端每次变化都会广播 HARK_ACCOUNTS_EVENT。 */

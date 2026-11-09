@@ -66,6 +66,8 @@ pub struct HarkAccountsState {
     /// 已经在窗口里打开过（有 WebView）的账号。
     pub opened: Vec<String>,
     pub window_open: bool,
+    /// Hark 窗口是否吸附在主窗口右侧。
+    pub docked: bool,
 }
 
 fn data_root() -> PathBuf {
@@ -287,6 +289,12 @@ struct Geometry {
     height: f64,
     #[serde(default)]
     maximized: bool,
+    #[serde(default = "default_true")]
+    docked: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn read_geometry() -> Option<Geometry> {
@@ -306,8 +314,10 @@ fn save_geometry(window: &tauri::Window) {
             width: 1100.0,
             height: 800.0,
             maximized,
+            docked: true,
         });
         g.maximized = maximized;
+        g.docked = dock::enabled();
         let _ = std::fs::write(geometry_path(), serde_json::to_string(&g).unwrap_or_default());
         return;
     }
@@ -320,6 +330,7 @@ fn save_geometry(window: &tauri::Window) {
         width: size.width as f64 / scale,
         height: size.height as f64 / scale,
         maximized: false,
+        docked: dock::enabled(),
     };
     let _ = std::fs::write(geometry_path(), serde_json::to_string(&g).unwrap_or_default());
 }
@@ -351,17 +362,32 @@ fn ensure_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String>
     let window = builder.build().map_err(|e| format!("创建 Hark 窗口失败：{e}"))?;
     if geometry.is_some_and(|g| g.maximized) {
         let _ = window.maximize();
+    } else {
+        dock::apply(app);
     }
     Ok(window)
 }
 
 /// 由 lib.rs 的全局 `on_window_event` 调用（主线程）。
 pub fn handle_window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
+    if window.label() == dock::MAIN_LABEL {
+        if matches!(
+            event,
+            tauri::WindowEvent::Moved(_)
+                | tauri::WindowEvent::Resized(_)
+                | tauri::WindowEvent::ScaleFactorChanged { .. }
+        ) {
+            dock::apply(window.app_handle());
+        }
+        return;
+    }
     if window.label() != HARK_WINDOW_LABEL {
         return;
     }
     match event {
+        tauri::WindowEvent::Moved(_) => dock::on_hark_moved(window),
         tauri::WindowEvent::Resized(_) | tauri::WindowEvent::ScaleFactorChanged { .. } => {
+            dock::on_hark_resized(window);
             if let Some(wv) = window.app_handle().get_webview_window(HARK_WINDOW_LABEL) {
                 SURFACES.with(|slot| {
                 if let Ok(store) = slot.try_borrow() {
@@ -394,6 +420,7 @@ fn current_state(app: &tauri::AppHandle) -> HarkAccountsState {
         active: file.active,
         opened: opened_mirror().lock().map(|m| m.clone()).unwrap_or_default(),
         window_open: app.get_webview_window(HARK_WINDOW_LABEL).is_some(),
+        docked: dock::enabled(),
     }
 }
 
@@ -407,6 +434,158 @@ fn set_active_in_file(id: &str) {
     if file.active.as_deref() != Some(id) {
         file.active = Some(id.to_owned());
         let _ = write_accounts(&file);
+    }
+}
+
+// ---------------------------------------------------------------- 吸附
+
+/// Hark 窗口吸附在主窗口右侧：同顶、同高、紧贴右边缘，主窗口移动 / 缩放时跟随。
+/// 用户把 Hark 窗口拖离右边缘就自动取消吸附；拖回边缘附近（[`SNAP_PX`] 内）重新吸上。
+/// 全部在主线程（窗口事件回调 / on_main）里调用。
+mod dock {
+    use std::{
+        sync::{
+            Mutex, OnceLock,
+            atomic::{AtomicBool, Ordering},
+        },
+        time::{Duration, Instant},
+    };
+
+    use tauri::{Manager, PhysicalPosition, PhysicalSize};
+
+    use super::{HARK_WINDOW_LABEL, emit_state, read_geometry};
+
+    pub const MAIN_LABEL: &str = "main";
+    /// 拖到距离主窗口右边缘多少（逻辑像素）以内算「吸上」。
+    const SNAP_PX: f64 = 24.0;
+    /// 我们自己移动 / 改大小 Hark 窗口后，这段时间里的 Moved/Resized 事件不当成用户操作。
+    const SELF_MOVE_GRACE: Duration = Duration::from_millis(350);
+
+    fn flag() -> &'static AtomicBool {
+        static FLAG: OnceLock<AtomicBool> = OnceLock::new();
+        FLAG.get_or_init(|| AtomicBool::new(read_geometry().map_or(true, |g| g.docked)))
+    }
+
+    fn last_self_move() -> &'static Mutex<Option<Instant>> {
+        static AT: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
+        AT.get_or_init(|| Mutex::new(None))
+    }
+
+    fn in_grace() -> bool {
+        last_self_move()
+            .lock()
+            .ok()
+            .and_then(|g| *g)
+            .is_some_and(|t| t.elapsed() < SELF_MOVE_GRACE)
+    }
+
+    fn mark_self_move() {
+        if let Ok(mut g) = last_self_move().lock() {
+            *g = Some(Instant::now());
+        }
+    }
+
+    pub fn enabled() -> bool {
+        flag().load(Ordering::Relaxed)
+    }
+
+    pub fn set_enabled(on: bool) {
+        flag().store(on, Ordering::Relaxed);
+    }
+
+    /// 主窗口右边缘的目标位置：(x, y, 高度)，物理像素。主窗口不可见 / 最小化 / 最大化 /
+    /// 全屏时返回 None（没地方贴）。
+    fn target(app: &tauri::AppHandle) -> Option<(i32, i32, u32)> {
+        let main = app.get_webview_window(MAIN_LABEL)?;
+        if !main.is_visible().unwrap_or(false)
+            || main.is_minimized().unwrap_or(false)
+            || main.is_maximized().unwrap_or(false)
+            || main.is_fullscreen().unwrap_or(false)
+        {
+            return None;
+        }
+        let pos = main.outer_position().ok()?;
+        let size = main.outer_size().ok()?;
+        Some((pos.x + size.width as i32, pos.y, size.height))
+    }
+
+    /// 吸附开着时，把 Hark 窗口挪到主窗口右侧并设成同高（宽度不变）。
+    /// 目标位置不在任何显示器上（主窗口已贴着屏幕右边）时不动它。
+    pub fn apply(app: &tauri::AppHandle) {
+        if !enabled() {
+            return;
+        }
+        let Some(hark) = app.get_webview_window(HARK_WINDOW_LABEL) else {
+            return;
+        };
+        if hark.is_maximized().unwrap_or(false) || hark.is_minimized().unwrap_or(false) {
+            return;
+        }
+        let Some((x, y, height)) = target(app) else {
+            return;
+        };
+        let on_screen = hark
+            .monitor_from_point((x + 40) as f64, (y + 40) as f64)
+            .ok()
+            .flatten()
+            .is_some();
+        if !on_screen {
+            return;
+        }
+        let (Ok(outer), Ok(inner), Ok(pos_now)) =
+            (hark.outer_size(), hark.inner_size(), hark.outer_position())
+        else {
+            return;
+        };
+        if pos_now.x == x && pos_now.y == y && outer.height == height {
+            return;
+        }
+        mark_self_move();
+        // set_size 设的是 inner 大小；带标题栏 / 边框时 outer 更高，减掉差值让外框和主窗口同高。
+        let chrome = outer.height.saturating_sub(inner.height);
+        if outer.height != height {
+            let _ = hark.set_size(PhysicalSize::new(
+                inner.width,
+                height.saturating_sub(chrome).max(300),
+            ));
+        }
+        let _ = hark.set_position(PhysicalPosition::new(x, y));
+    }
+
+    /// Hark 窗口被移动：是我们自己挪的就忽略；否则看离主窗口右边缘多远，
+    /// 近了就吸上，远了就取消吸附。
+    pub fn on_hark_moved(window: &tauri::Window) {
+        if in_grace() {
+            return;
+        }
+        let app = window.app_handle();
+        let Some((x, y, _)) = target(app) else {
+            return;
+        };
+        let Ok(pos) = window.outer_position() else {
+            return;
+        };
+        let scale = window.scale_factor().unwrap_or(1.0);
+        let snap = (SNAP_PX * scale) as i32;
+        let near = (pos.x - x).abs() <= snap && (pos.y - y).abs() <= snap * 4;
+        let was = enabled();
+        if near {
+            set_enabled(true);
+            apply(app);
+        } else if was {
+            set_enabled(false);
+        }
+        if was != enabled() {
+            emit_state(app);
+        }
+    }
+
+    /// 用户拖 Hark 窗口的边改大小：吸附时高度跟主窗口锁定，宽度随用户。
+    pub fn on_hark_resized(window: &tauri::Window) {
+        if in_grace() || !enabled() {
+            return;
+        }
+        apply(window.app_handle());
     }
 }
 
@@ -594,6 +773,26 @@ pub async fn hark_window_open(app: tauri::AppHandle, id: Option<String>) -> Resu
     let _ = window.unminimize();
     let _ = window.show();
     let _ = window.set_focus();
+    emit_state(&app);
+    Ok(())
+}
+
+/// 切换条上的「吸附」开关：开 = 贴到主窗口右侧并跟随，关 = 自由窗口。
+#[tauri::command]
+pub async fn hark_window_set_dock(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    dock::set_enabled(enabled);
+    let handle = app.clone();
+    on_main(&app, move || {
+        if let Some(w) = handle.get_webview_window(HARK_WINDOW_LABEL) {
+            if enabled {
+                let _ = w.unmaximize();
+            }
+            dock::apply(&handle);
+            let webview: &tauri::Webview = w.as_ref();
+            save_geometry(&webview.window());
+        }
+        Ok::<(), String>(())
+    })?;
     emit_state(&app);
     Ok(())
 }

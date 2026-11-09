@@ -8,6 +8,8 @@ import {
   ArrowRight,
   Code2,
   Home,
+  PanelRightClose,
+  PanelRightOpen,
   Pencil,
   Plus,
   RotateCw,
@@ -142,7 +144,7 @@ function AccountChip({
 }
 
 export function HarkWindowBar() {
-  const { accounts, active, opened } = useHarkAccounts();
+  const { accounts, active, opened, docked } = useHarkAccounts();
   const [busy, setBusy] = useState(false);
   const [pinnedMenuId, setPinnedMenuId] = useState<string | null>(null);
 
@@ -198,6 +200,12 @@ export function HarkWindowBar() {
     setPinnedMenuId((current) => (current === id ? null : id));
   }, []);
 
+  const toggleDock = useCallback(() => {
+    harkWindowApi
+      .setDock(!docked)
+      .catch((error) => reportError('切换吸附失败', error));
+  }, [docked]);
+
   const hasActive = active !== null;
 
   return (
@@ -233,6 +241,19 @@ export function HarkWindowBar() {
 
       {/* 右侧：当前账号页面的导航 / 调试按钮 */}
       <div className="flex shrink-0 items-center gap-0.5">
+        <button
+          type="button"
+          className={cn(iconButtonClass, docked && 'text-primary')}
+          title={docked ? '已吸附在主窗口右侧（点击取消）' : '吸附到主窗口右侧'}
+          aria-pressed={docked}
+          onClick={toggleDock}
+        >
+          {docked ? (
+            <PanelRightClose className="h-4 w-4" />
+          ) : (
+            <PanelRightOpen className="h-4 w-4" />
+          )}
+        </button>
         {NAV_ACTIONS.map(({ action, title, icon: Icon }) => (
           <button
             key={action}
