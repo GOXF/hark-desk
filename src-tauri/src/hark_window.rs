@@ -215,6 +215,8 @@ fn build_account_view(
                 wry::NewWindowResponse::Deny
             }
         });
+    // 钩子：hark.com 注入脚本（云电脑画面放大 / 弹出），见 hark_window_inject
+    builder = crate::hark_window_inject::decorate_account_builder(builder);
     if let Some(config) =
         crate::browser_native::inherited_proxy_url()
             .and_then(|u| crate::browser_native::proxy_config_from_url(&u))
@@ -847,6 +849,37 @@ fn radix36(mut n: u64) -> String {
     }
     out.reverse();
     String::from_utf8(out).unwrap_or_default()
+}
+
+// ---------------------------------------------------------------- 供 hark_window_inject 用的钩子
+// 只读 / 只转发，不改上面的窗口逻辑。除 `has_account` 外都只能在主线程调用。
+
+/// 账号是否在 Hark 窗口的账号列表里（任意线程）。
+pub(crate) fn has_account(id: &str) -> bool {
+    valid_id(id) && read_accounts().accounts.iter().any(|a| a.id == id)
+}
+
+/// 在主线程上借用某账号已打开的 WebView；没打开（或 SURFACES 正被借用）返回 None。
+pub(crate) fn with_account_view<R>(id: &str, f: impl FnOnce(&WebView) -> R) -> Option<R> {
+    SURFACES.with(|slot| {
+        let store = slot.try_borrow().ok()?;
+        store.views.get(id).map(f)
+    })
+}
+
+/// 账号的数据目录（与账号 WebView 共用，后台 WebView 用它共享登录状态）。
+pub(crate) fn account_profile_dir(id: &str) -> PathBuf {
+    profile_dir(id)
+}
+
+/// 账号 WebView 在窗口里的区域（切换条下方）。
+pub(crate) fn account_content_rect(window: &tauri::WebviewWindow) -> Rect {
+    content_rect(window)
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn account_data_store_identifier(id: &str) -> [u8; 16] {
+    data_store_identifier(id)
 }
 
 #[cfg(test)]

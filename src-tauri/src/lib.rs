@@ -18,6 +18,7 @@ mod events;
 mod hark_bridge;
 mod hark_bridge_inject;
 mod hark_window;
+mod hark_window_inject;
 mod host_bus;
 mod host_client;
 mod host_windows;
