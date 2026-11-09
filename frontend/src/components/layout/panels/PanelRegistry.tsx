@@ -217,6 +217,10 @@ const BASE_PANEL_COMPONENTS: Record<string, React.FC<IDockviewPanelProps>> = {
   [PLUGIN_PANEL_COMPONENT]: lazyPanel(
     () => import('@/components/layout/panels/PluginDockviewPanel')
   ),
+  // Hark Desk：嵌入标签页（B 方案），id 同 HARK_EMBED_PANEL_COMPONENT。
+  'hark-embed': lazyPanel(
+    () => import('@/features/hark-accounts/HarkEmbedPanel')
+  ),
 };
 
 const dynamicPanelWrappers = new Map<string, React.FC<IDockviewPanelProps>>();
