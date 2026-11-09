@@ -18,6 +18,8 @@ mod events;
 mod hark_bridge;
 mod hark_bridge_inject;
 mod hark_embed;
+#[cfg(target_os = "windows")]
+mod hark_turnstile;
 mod hark_window;
 mod hark_window_inject;
 mod host_bus;

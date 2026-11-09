@@ -12,7 +12,7 @@
 //!   的做法一样），不借 A 窗口的 `SURFACES.contexts`，两边各自关闭互不影响；
 //! - WebView 不是 Send，全部放在主线程 thread_local [`EMBEDS`] 里，所有操作经
 //!   `run_on_main_thread`；`can_serve` 这类主线程外的查询读 [`opened_mirror`]。
-//! - 页面没有任何 IPC，Agent / 插件都碰不到它。
+//! - 页面不注册 Tauri IPC；Windows 的验证点击处理器与 A 方案共用，Agent / 插件都碰不到它。
 
 use std::{
     cell::RefCell,

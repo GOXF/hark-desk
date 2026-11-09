@@ -9,8 +9,8 @@
 //!   切换账号 = 显示一个、隐藏其他；
 //! - 账号列表存在 `<数据目录>/hark-accounts.json`；窗口位置大小存在
 //!   `<数据目录>/hark-window.json`，下次打开恢复；
-//! - hark.com 页面没有任何 IPC（不注册 ipc handler，capability 也不含它），
-//!   Agent / 插件都碰不到它。
+//! - hark.com 页面不注册 Tauri IPC；Windows 仅接收本页验证框的专用延时点击消息，
+//!   capability 不含它，Agent / 插件都碰不到它。
 //!
 //! WebView 不是 Send，全部放在主线程的 thread_local 里；所有创建、显示、
 //! 销毁都通过 `run_on_main_thread` 在主线程做（不能在 IPC 回调里同步建第二个
@@ -249,7 +249,10 @@ pub(crate) fn build_account_view_in(
     }
     #[cfg(not(target_os = "macos"))]
     let _ = id;
-    builder.build_as_child(window).map_err(|e| e.to_string())
+    let view = builder.build_as_child(window).map_err(|e| e.to_string())?;
+    #[cfg(target_os = "windows")]
+    crate::hark_turnstile::install(&view)?;
+    Ok(view)
 }
 
 #[cfg(target_os = "macos")]
