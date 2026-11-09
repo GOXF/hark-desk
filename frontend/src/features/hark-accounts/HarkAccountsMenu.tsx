@@ -24,6 +24,7 @@ import {
   type HarkAccount,
   type HarkOpenMode,
 } from './harkWindowApi';
+import { requestHarkEmbedOpen } from './openHarkEmbedTab';
 import { HARK_BRIDGE_SETTINGS_PATH } from '@/features/hark-bridge/harkBridgeApi';
 import { openSettingsSurface } from '@/lib/api/settingsWindow';
 
@@ -47,7 +48,8 @@ function errorText(error: unknown): string {
 
 /**
  * 活动栏的 Hark 按钮。账号由宿主直接用 WebView2 打开（每账号独立数据目录，
- * 不经过内置浏览器插件），见 src-tauri/src/hark_window.rs。
+ * 不经过内置浏览器插件）：A 独立窗口见 src-tauri/src/hark_window.rs，
+ * B 嵌入标签页见 HarkEmbedPanel.tsx / src-tauri/src/hark_embed.rs。
  */
 export function HarkAccountsMenu() {
   const { accounts, opened } = useHarkAccounts();
@@ -55,9 +57,15 @@ export function HarkAccountsMenu() {
   const [mode, setMode] = useState<HarkOpenMode>(getHarkOpenMode);
   const navigate = useNavigate();
 
-  const openAccount = async (id: string) => {
+  /** 按打开方式走 A（独立窗口）或 B（嵌入标签页）。 */
+  const openAccount = async (id: string, name?: string) => {
     if (mode === 'tab') {
-      toast.info('「嵌入标签页」还在做，先用独立窗口打开');
+      const accountName =
+        name ?? accounts.find((a) => a.id === id)?.name ?? '账号';
+      if (!requestHarkEmbedOpen({ accountId: id, accountName })) {
+        toast.info('工作区还没就绪，就绪后会自动打开 Hark 标签页');
+      }
+      return;
     }
     try {
       await harkWindowApi.open(id);
@@ -70,8 +78,12 @@ export function HarkAccountsMenu() {
     setBusy(true);
     try {
       const created = await harkWindowApi.add();
-      await harkWindowApi.open(created.id);
-      toast.success(`已添加 ${created.name}，请在 Hark 窗口里登录`);
+      await openAccount(created.id, created.name);
+      toast.success(
+        mode === 'tab'
+          ? `已添加 ${created.name}，请在 Hark 标签页里登录`
+          : `已添加 ${created.name}，请在 Hark 窗口里登录`
+      );
     } catch (error) {
       toast.error(`添加 Hark 账号失败：${errorText(error)}`);
     } finally {
@@ -169,9 +181,7 @@ export function HarkAccountsMenu() {
         </DropdownMenuLabel>
         <DropdownMenuRadioGroup value={mode} onValueChange={changeMode}>
           <DropdownMenuRadioItem value="window">独立窗口</DropdownMenuRadioItem>
-          <DropdownMenuRadioItem value="tab" disabled>
-            嵌入标签页（即将推出）
-          </DropdownMenuRadioItem>
+          <DropdownMenuRadioItem value="tab">嵌入标签页</DropdownMenuRadioItem>
         </DropdownMenuRadioGroup>
       </DropdownMenuContent>
     </DropdownMenu>

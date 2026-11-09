@@ -22,8 +22,16 @@ export type HarkWindowAction =
   | 'home'
   | 'devtools';
 
-/** 打开方式：A 独立窗口（已实现），B 嵌入标签页（以后实现）。 */
+/** 打开方式：A 独立窗口（window），B 嵌入主窗口的 dockview 标签页（tab）。 */
 export type HarkOpenMode = 'window' | 'tab';
+
+/** 嵌入视图在主窗口里的位置，主窗口逻辑像素（= 前端 CSS px）。 */
+export type HarkEmbedRect = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
 
 export const HARK_ACCOUNTS_EVENT = 'hark-accounts-changed';
 /** 顶部切换条高度，要和 Rust 的 BAR_HEIGHT 一致。 */
@@ -57,6 +65,21 @@ export const harkWindowApi = {
     call<void>('hark_window_action', { action }),
   setDock: (enabled: boolean) =>
     call<void>('hark_window_set_dock', { enabled }),
+  /** B 方案：账号 WebView 作为主窗口原生子视图嵌在标签页里。后端：hark_embed.rs。 */
+  embed: {
+    /** 不存在则创建；设 bounds、显示并聚焦。 */
+    show: (id: string, rect: HarkEmbedRect) =>
+      call<void>('hark_embed_show', { id, rect }),
+    /** 只更新 bounds，不改可见性。 */
+    bounds: (id: string, rect: HarkEmbedRect) =>
+      call<void>('hark_embed_bounds', { id, rect }),
+    /** 隐藏（不销毁）。 */
+    hide: (id: string) => call<void>('hark_embed_hide', { id }),
+    /** 销毁。 */
+    close: (id: string) => call<void>('hark_embed_close', { id }),
+    action: (id: string, action: HarkWindowAction) =>
+      call<void>('hark_embed_action', { id, action }),
+  },
 };
 
 /** 订阅账号列表；后端每次变化都会广播 HARK_ACCOUNTS_EVENT。 */
@@ -88,13 +111,14 @@ export function useHarkAccounts(): HarkAccountsState {
   return state;
 }
 
-const OPEN_MODE_KEY = 'hark-desk.hark-open-mode';
+const OPEN_MODE_KEY = 'hark.openMode';
 
+/** 默认嵌入标签页（'tab'）；只有明确存过 'window' 才走独立窗口。 */
 export function getHarkOpenMode(): HarkOpenMode {
   try {
-    return localStorage.getItem(OPEN_MODE_KEY) === 'tab' ? 'tab' : 'window';
+    return localStorage.getItem(OPEN_MODE_KEY) === 'window' ? 'window' : 'tab';
   } catch {
-    return 'window';
+    return 'tab';
   }
 }
 

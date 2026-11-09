@@ -49,6 +49,10 @@ import {
   setBrowserTabOpenHandler,
 } from '@/features/host-browser/openBrowserTab';
 import {
+  openOrFocusHarkEmbedPanel,
+  setHarkEmbedOpenHandler,
+} from '@/features/hark-accounts/openHarkEmbedTab';
+import {
   clearTerminalShelf,
   markTerminalShelf,
   terminalShelfGroupId,
@@ -1864,6 +1868,22 @@ export function PanelActionsProvider({ children }: { children: ReactNode }) {
       setBrowserTabOpenHandler(null);
     };
   }, [canOpenWebPreview]);
+
+  // Hark Desk：嵌入标签页（B 方案）。只新增一个面板类型，不影响上面的浏览器标签。
+  useEffect(() => {
+    if (!apiRef.current) return undefined;
+    setHarkEmbedOpenHandler(
+      (request) => {
+        const dockviewApi = apiRef.current;
+        if (!dockviewApi) return;
+        openOrFocusHarkEmbedPanel(dockviewApi, request, (options) =>
+          addPanelToActiveEditorGroup(options)
+        );
+      },
+      () => apiRef.current
+    );
+    return () => setHarkEmbedOpenHandler(null);
+  }, [addPanelToActiveEditorGroup, dockviewEpoch]);
 
   useEffect(() => {
     const open = openPluginPanelRef.current;
