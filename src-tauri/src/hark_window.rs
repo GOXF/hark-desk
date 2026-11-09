@@ -147,7 +147,7 @@ fn sync_mirror(store: &Surfaces) {
     }
 }
 
-fn on_main<T: Send + 'static>(
+pub(crate) fn on_main<T: Send + 'static>(
     app: &tauri::AppHandle,
     f: impl FnOnce() -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
@@ -190,15 +190,34 @@ fn build_account_view(
     id: &str,
     #[cfg(target_os = "windows")] context: &mut wry::WebContext,
 ) -> Result<WebView, String> {
+    build_account_view_in(
+        window,
+        id,
+        &format!("hark-account-{id}"),
+        content_rect(window),
+        #[cfg(target_os = "windows")]
+        context,
+    )
+}
+
+/// 在任意窗口（`window`）上为账号 `id` 建一个隐藏的子 WebView，初始区域 `bounds`
+/// （窗口逻辑像素）。A 方案的 Hark 窗口和 B 方案的主窗口嵌入标签都走这里，
+/// 同一套 keeps_in_app / 代理 / 注入 / 数据目录。
+pub(crate) fn build_account_view_in(
+    window: &tauri::WebviewWindow,
+    id: &str,
+    label: &str,
+    bounds: Rect,
+    #[cfg(target_os = "windows")] context: &mut wry::WebContext,
+) -> Result<WebView, String> {
     #[cfg(target_os = "windows")]
     let builder = WebViewBuilder::new_with_web_context(context);
     #[cfg(not(target_os = "windows"))]
     let builder = WebViewBuilder::new();
-    let label = format!("hark-account-{id}");
     let mut builder = builder
-        .with_id(&label)
+        .with_id(label)
         .with_url(HARK_HOME_URL)
-        .with_bounds(content_rect(window))
+        .with_bounds(bounds)
         .with_visible(false)
         .with_devtools(true)
         .with_hotkeys_zoom(true)
@@ -228,6 +247,8 @@ fn build_account_view(
         use tauri_runtime_wry::wry::WebViewBuilderExtDarwin;
         builder = builder.with_data_store_identifier(data_store_identifier(id));
     }
+    #[cfg(not(target_os = "macos"))]
+    let _ = id;
     builder.build_as_child(window).map_err(|e| e.to_string())
 }
 
@@ -680,6 +701,8 @@ pub async fn hark_accounts_remove(app: tauri::AppHandle, id: String) -> Result<(
             store.views.remove(&close_id);
             #[cfg(target_os = "windows")]
             store.contexts.remove(&close_id);
+            // B 方案：主窗口里的嵌入标签也一起销毁
+            crate::hark_embed::destroy_on_main(&close_id);
             if store.active.as_deref() == Some(close_id.as_str()) {
                 store.active = None;
             }
@@ -819,33 +842,39 @@ pub async fn hark_window_action(app: tauri::AppHandle, action: String) -> Result
             let Some(view) = store.active.as_ref().and_then(|id| store.views.get(id)) else {
                 return Ok(());
             };
-            let result = match action.as_str() {
-                "back" => view.evaluate_script("history.back()"),
-                "forward" => view.evaluate_script("history.forward()"),
-                "reload" => view.reload(),
-                "home" => view.load_url(HARK_HOME_URL),
-                "devtools" => {
-                    #[cfg(target_os = "windows")]
-                    {
-                        use tauri_runtime_wry::wry::WebViewExtWindows;
-                        unsafe {
-                            let core = view.webview();
-                            if let Ok(settings) = core.Settings() {
-                                let _ = settings.SetAreDevToolsEnabled(true);
-                            }
-                            let _ = core.OpenDevToolsWindow();
-                        }
-                    }
-                    // open_devtools 只在 debug_assertions 下存在（release 没开 devtools 特性）
-                    #[cfg(all(not(target_os = "windows"), debug_assertions))]
-                    view.open_devtools();
-                    Ok(())
-                }
-                other => return Err(format!("未知操作：{other}")),
-            };
-            result.map_err(|e| e.to_string())
+            run_view_action(view, &action)
         })
     })
+}
+
+/// 账号 WebView 上的工具条按钮：back / forward / reload / home / devtools（主线程调用）。
+/// A 窗口切换条和 B 嵌入标签工具条共用。
+pub(crate) fn run_view_action(view: &WebView, action: &str) -> Result<(), String> {
+    let result = match action {
+        "back" => view.evaluate_script("history.back()"),
+        "forward" => view.evaluate_script("history.forward()"),
+        "reload" => view.reload(),
+        "home" => view.load_url(HARK_HOME_URL),
+        "devtools" => {
+            #[cfg(target_os = "windows")]
+            {
+                use tauri_runtime_wry::wry::WebViewExtWindows;
+                unsafe {
+                    let core = view.webview();
+                    if let Ok(settings) = core.Settings() {
+                        let _ = settings.SetAreDevToolsEnabled(true);
+                    }
+                    let _ = core.OpenDevToolsWindow();
+                }
+            }
+            // open_devtools 只在 debug_assertions 下存在（release 没开 devtools 特性）
+            #[cfg(all(not(target_os = "windows"), debug_assertions))]
+            view.open_devtools();
+            Ok(())
+        }
+        other => return Err(format!("未知操作：{other}")),
+    };
+    result.map_err(|e| e.to_string())
 }
 
 fn radix36(mut n: u64) -> String {
@@ -870,12 +899,22 @@ pub(crate) fn has_account(id: &str) -> bool {
     valid_id(id) && read_accounts().accounts.iter().any(|a| a.id == id)
 }
 
-/// 在主线程上借用某账号已打开的 WebView；没打开（或 SURFACES 正被借用）返回 None。
+/// 在主线程上借用某账号已打开的 WebView：优先 Hark 窗口（A）里的，其次主窗口嵌入标签（B）
+/// 里的；都没打开（或正被借用）返回 None。
 pub(crate) fn with_account_view<R>(id: &str, f: impl FnOnce(&WebView) -> R) -> Option<R> {
-    SURFACES.with(|slot| {
-        let store = slot.try_borrow().ok()?;
-        store.views.get(id).map(f)
-    })
+    let in_window = SURFACES.with(|slot| {
+        slot.try_borrow()
+            .map(|store| store.views.contains_key(id))
+            .unwrap_or(false)
+    });
+    if in_window {
+        SURFACES.with(|slot| {
+            let store = slot.try_borrow().ok()?;
+            store.views.get(id).map(f)
+        })
+    } else {
+        crate::hark_embed::with_embed_view(id, f)
+    }
 }
 
 /// 账号的数据目录（与账号 WebView 共用，后台 WebView 用它共享登录状态）。

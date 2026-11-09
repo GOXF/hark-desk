@@ -17,6 +17,7 @@ mod error;
 mod events;
 mod hark_bridge;
 mod hark_bridge_inject;
+mod hark_embed;
 mod hark_window;
 mod hark_window_inject;
 mod host_bus;
@@ -425,6 +426,7 @@ pub fn run() {
     .on_window_event(|window, event| {
         window_chrome::handle_window_event(window, event);
         hark_window::handle_window_event(window, event);
+        hark_embed::handle_window_event(window, event);
     })
     .setup(move |app| {
         // Apply frameless chrome while the window is still hidden so the first
@@ -775,6 +777,11 @@ pub fn run() {
         hark_window::hark_window_open,
         hark_window::hark_window_action,
         hark_window::hark_window_set_dock,
+        hark_embed::hark_embed_show,
+        hark_embed::hark_embed_bounds,
+        hark_embed::hark_embed_hide,
+        hark_embed::hark_embed_close,
+        hark_embed::hark_embed_action,
         hark_bridge::commands::hark_bridge_state,
         hark_bridge::commands::hark_bridge_tunnel_save,
         hark_bridge::commands::hark_bridge_create,

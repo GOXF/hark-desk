@@ -49,7 +49,7 @@ pub(crate) fn decorate_account_builder(builder: WebViewBuilder<'_>) -> WebViewBu
 /// 要在哪个 WebView 上操作。
 #[derive(Clone, Debug)]
 pub(crate) enum ViewRef {
-    /// Hark 窗口里某账号的可见 WebView（用户正在用的那个）。
+    /// 某账号的可见 WebView（用户正在用的那个）：Hark 窗口（A）里的优先，其次主窗口嵌入标签（B）。
     Account(String),
     /// 本文件开的后台 WebView（[`open_background`] 返回的令牌）。
     Background(String),
@@ -115,8 +115,17 @@ fn origin_of_str(raw: &str) -> Option<String> {
 
 /// 文件桥该不该走 Hark 窗口：账号在 Hark 窗口的账号列表里，且窗口开着（账号 WebView
 /// 没打开时也能在窗口上开后台 WebView）。返回 false 时调用方回退内置浏览器的老路径。
+/// 账号只在主窗口嵌入标签（B 方案）里开着时也算（后台 WebView 改挂在主窗口上）。
 pub(crate) fn can_serve(app: &tauri::AppHandle, id: &str) -> bool {
-    hark_window::has_account(id) && app.get_webview_window(HARK_WINDOW_LABEL).is_some()
+    hark_window::has_account(id)
+        && (app.get_webview_window(HARK_WINDOW_LABEL).is_some()
+            || crate::hark_embed::is_open(id))
+}
+
+/// 后台 WebView 挂在哪个窗口：优先 Hark 窗口，否则（账号只在嵌入标签里开着）主窗口。
+fn background_host(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
+    app.get_webview_window(HARK_WINDOW_LABEL)
+        .or_else(|| app.get_webview_window(crate::hark_embed::EMBED_HOST_LABEL))
 }
 
 /// 读目标 WebView 当前地址；WebView 不存在返回 None。
@@ -194,9 +203,8 @@ pub(crate) async fn open_background(
     let url_main = url.to_owned();
     let token_main = token.clone();
     on_main_async(app, Duration::from_secs(15), move || {
-        let window = handle
-            .get_webview_window(HARK_WINDOW_LABEL)
-            .ok_or_else(|| "Hark 窗口没有打开".to_string())?;
+        let window =
+            background_host(&handle).ok_or_else(|| "Hark 窗口没有打开".to_string())?;
         let dir = hark_window::account_profile_dir(&id_main);
         let _ = std::fs::create_dir_all(&dir);
         #[cfg(target_os = "windows")]
