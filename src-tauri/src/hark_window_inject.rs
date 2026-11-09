@@ -38,10 +38,14 @@ use crate::hark_window::{self, HARK_WINDOW_LABEL};
 
 /// hark.com 云电脑画面「放大 / 弹出」按钮，脚本内部自行判断域名（来自 PR #2）。
 const HARK_LIVEVIEW_SCRIPT: &str = include_str!("hark_liveview.js");
+/// 登录人机验证（Cloudflare Turnstile）被渲染进隐藏容器时把它显示出来。
+const HARK_TURNSTILE_SCRIPT: &str = include_str!("hark_turnstile.js");
 
 /// `build_account_view` 的钩子：给账号 WebView 加上 hark.com 注入脚本。
 pub(crate) fn decorate_account_builder(builder: WebViewBuilder<'_>) -> WebViewBuilder<'_> {
-    builder.with_initialization_script_for_main_only(HARK_LIVEVIEW_SCRIPT, true)
+    builder
+        .with_initialization_script_for_main_only(HARK_TURNSTILE_SCRIPT, true)
+        .with_initialization_script_for_main_only(HARK_LIVEVIEW_SCRIPT, true)
 }
 
 // ---------------------------------------------------------------- 求值目标
