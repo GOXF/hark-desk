@@ -1,4 +1,11 @@
 {
+  "processingStatus": {
+    "title": "Processing status",
+    "processing": "Processing",
+    "waiting_for_user": "Waiting for input",
+    "ended": "Ended",
+    "interrupted": "Interrupted"
+  },
   "piProjectTrust": {
     "title": "Pi project files",
     "grantTitle": "This folder is already trusted",

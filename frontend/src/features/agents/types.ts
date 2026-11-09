@@ -1,4 +1,4 @@
-import type { AgentId } from 'shared/types';
+import type { AgentId, AgentEvent as ProtocolAgentEvent } from 'shared/types';
 
 /**
  * Canonical agent-identity union. Backend batch D2 unified the agent-identity
@@ -188,6 +188,7 @@ export type AgentEvent =
       actual_value: string;
     }
   | { kind: 'available_commands'; commands: AgentAvailableCommand[] }
+  | Extract<ProtocolAgentEvent, { kind: 'session_info_updated' }>
   | { kind: 'session_load_failed'; reason: string }
   | { kind: 'turn_completed'; stop_reason?: string | null }
   | { kind: 'session_config_stale'; reason?: string | null }

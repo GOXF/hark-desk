@@ -72,6 +72,8 @@ import { conversationApi } from '@/features/conversation/conversationApi';
 import { getComposerSteeringTarget } from '@/components/tasks/follow-up/sessionComposerSteering';
 import { ConversationChildrenSummary } from '@/features/conversation/ConversationChildrenSummary';
 import { PiProjectTrustBanner } from '@/features/conversation/PiProjectTrustBanner';
+import { useProviderProcessingStatus } from '@/features/conversation/useProviderProcessingStatus';
+import { ProviderProcessingStatusBar } from './conversation/ProviderProcessingStatusBar';
 import {
   AGENT_BINDING_LOAD_FAILURE_NOTICE_ROW_ID,
   AGENT_CONNECTION_RECOVERING_NOTICE_ROW_ID,
@@ -1990,8 +1992,14 @@ const AgentTimelineConversation = forwardRef<
     return () => setConversationStatusPermissions?.([]);
   }, [composerPermissions, setConversationStatusPermissions]);
 
+  const providerProcessingStatus = useProviderProcessingStatus(
+    sessionId,
+    attempt.session?.executor === 'hark'
+  );
+
   return (
     <div ref={panelRef} className="relative flex h-full min-h-0 flex-col">
+      <ProviderProcessingStatusBar state={providerProcessingStatus} />
       {findOpen ? (
         <ConversationFindBar
           query={findQuery}
