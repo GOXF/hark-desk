@@ -1,4 +1,11 @@
 {
+  "processingStatus": {
+    "title": "处理状态",
+    "processing": "处理中",
+    "waiting_for_user": "等待补充",
+    "ended": "已结束",
+    "interrupted": "已中断"
+  },
   "piProjectTrust": {
     "title": "Pi 项目文件",
     "grantTitle": "此文件夹已被信任",
