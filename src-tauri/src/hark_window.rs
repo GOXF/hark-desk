@@ -205,10 +205,10 @@ fn build_account_view(
         // 外链（target=_blank 之外的跨站跳转）仍在本窗口里打开；hark.com 的
         // 登录跳转（Google 等）需要留在同一个 WebView 里才能回写 Cookie。
         .with_navigation_handler(|url| url.starts_with("http://") || url.starts_with("https://"))
-        .with_new_window_req_handler(|url, _features| {
-            // 登录弹窗（Google / Apple / 微软 / hark.com 自己）用 WebView2 默认弹窗，
-            // 与本账号共用同一环境和 Cookie；其他链接交给系统浏览器。
-            if keeps_in_app(&url) {
+        .with_new_window_req_handler(|url, features| {
+            // 登录弹窗（Google / Apple / 微软 / hark.com 自己）和云电脑画面「↗ 弹出」
+            // 用 WebView2 默认弹窗，与本账号共用同一环境和 Cookie；其他链接交给系统浏览器。
+            if keeps_in_app(&url) || is_liveview_popup(features.size) {
                 wry::NewWindowResponse::Allow
             } else {
                 open_system_browser(&url);
@@ -259,6 +259,17 @@ fn keeps_in_app(url: &str) -> bool {
     HOSTS
         .iter()
         .any(|h| host == *h || host.ends_with(&format!(".{h}")))
+}
+
+/// hark_liveview.js 的「↗ 弹出」固定用 `popup,width=1280,height=800` 打开云电脑画面，
+/// 云电脑的域名不固定，所以按这个窗口尺寸认出它，留在应用内（共用本账号登录）。
+const LIVEVIEW_POPUP_SIZE: (f64, f64) = (1280.0, 800.0);
+
+fn is_liveview_popup(size: Option<wry::dpi::LogicalSize<f64>>) -> bool {
+    size.is_some_and(|s| {
+        (s.width - LIVEVIEW_POPUP_SIZE.0).abs() < 1.5
+            && (s.height - LIVEVIEW_POPUP_SIZE.1).abs() < 1.5
+    })
 }
 
 fn open_system_browser(url: &str) {
@@ -885,6 +896,14 @@ pub(crate) fn account_data_store_identifier(id: &str) -> [u8; 16] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn liveview_popup_is_recognized_by_size() {
+        use wry::dpi::LogicalSize;
+        assert!(is_liveview_popup(Some(LogicalSize::new(1280.0, 800.0))));
+        assert!(!is_liveview_popup(Some(LogicalSize::new(800.0, 600.0))));
+        assert!(!is_liveview_popup(None));
+    }
 
     #[test]
     fn ids_are_checked() {

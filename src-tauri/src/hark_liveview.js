@@ -105,6 +105,7 @@
       popBtn.addEventListener("click", (e) => {
         e.preventDefault();
         e.stopPropagation();
+        // 尺寸不要改：hark_window.rs 的 is_liveview_popup 靠 1280x800 认出它并留在应用内。
         window.open(url, "_blank", "popup,width=1280,height=800");
       });
       btns.appendChild(popBtn);
