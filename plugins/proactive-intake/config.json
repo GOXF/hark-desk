@@ -1,0 +1,13 @@
+{
+  "enabled": false,
+  "pollSeconds": 120,
+  "repositories": [],
+  "allowedSenders": [],
+  "reasons": ["mention", "assign", "review_requested", "team_mention"],
+  "agentId": "",
+  "workspaceId": "",
+  "maxRunsPerDay": 10,
+  "maxTokensPerDay": 0,
+  "maxConcurrent": 2,
+  "markRead": false
+}
