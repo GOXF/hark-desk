@@ -1,0 +1,16 @@
+{
+  "name": "goxf.proactive-intake",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "validate": "node ../../packages/plugin-cli/dist/cli.js validate",
+    "build": "node ../../packages/plugin-cli/dist/cli.js build",
+    "test": "node ../../packages/plugin-cli/dist/cli.js test",
+    "test:unit": "node --test test/*.test.mjs",
+    "pack": "node ../../packages/plugin-cli/dist/cli.js pack"
+  },
+  "dependencies": {
+    "@vibex/plugin-sdk": "^2.0.0"
+  }
+}

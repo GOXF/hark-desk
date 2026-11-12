@@ -1,0 +1,138 @@
+{
+  "$schema": "https://schemas.vibex.dev/plugin/v4/plugin.schema.json",
+  "manifestVersion": 4,
+  "apiVersion": "2.0",
+  "id": "goxf.proactive-intake",
+  "publisher": "goxf",
+  "version": "0.1.0",
+  "name": "主动接活",
+  "readme": "README.md",
+  "engines": {
+    "vibex": ">=0.1.3 <1.0.0",
+    "pluginSdk": "^2.0.0"
+  },
+  "content": {
+    "root": "contents",
+    "index": ".vibex-plugin/content.index.json"
+  },
+  "config": {
+    "schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "title": "开启主动接活",
+          "description": "关闭时只跟进已在跑的会话，不读新通知。"
+        },
+        "githubToken": {
+          "type": "string",
+          "title": "GitHub token（可选）",
+          "description": "填入后下次检查时移入系统钥匙串并从设置中清除。留空则使用 gh 登录的账号。需要 notifications 与 repo 读权限。"
+        },
+        "pollSeconds": {
+          "type": "integer",
+          "minimum": 60,
+          "maximum": 3600,
+          "title": "轮询间隔（秒）",
+          "description": "GitHub 要求更长间隔时以 GitHub 为准。"
+        },
+        "repositories": {
+          "type": "array",
+          "items": { "type": "string" },
+          "title": "关注的仓库",
+          "description": "owner/name。留空表示所有仓库的通知都参与判断。"
+        },
+        "allowedSenders": {
+          "type": "array",
+          "items": { "type": "string" },
+          "title": "能发起工作的 GitHub 账号（白名单）",
+          "description": "只看发送人账号，不看消息内容。为空时不接任何活。"
+        },
+        "reasons": {
+          "type": "array",
+          "items": { "type": "string" },
+          "title": "接收的通知原因",
+          "description": "默认 mention、assign、review_requested、team_mention。"
+        },
+        "agentId": {
+          "type": "string",
+          "title": "接活用的 Agent",
+          "description": "留空时用 Agent 目录里的第一个。"
+        },
+        "workspaceId": {
+          "type": "string",
+          "title": "工作区 ID（可选）",
+          "description": "留空时在插件自己的临时工作区里开会话。"
+        },
+        "maxRunsPerDay": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000,
+          "title": "每日最多接活次数",
+          "description": "0 表示不限。超过后不接新活，已在跑的跑完。"
+        },
+        "maxTokensPerDay": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000000,
+          "title": "每日 token 上限",
+          "description": "0 表示不限。只统计 Agent 上报的用量。"
+        },
+        "maxConcurrent": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "title": "同时进行的最多会话数"
+        },
+        "markRead": {
+          "type": "boolean",
+          "title": "接活后把通知标为已读"
+        }
+      }
+    }
+  },
+  "entrypoints": {
+    "worker": {
+      "path": "dist/worker.mjs",
+      "runtime": "node",
+      "protocol": "1.1"
+    }
+  },
+  "integrations": [
+    {
+      "id": "intake-tick",
+      "kind": "host.service",
+      "handler": "intake.tick",
+      "intervalSeconds": 30
+    },
+    {
+      "id": "intake-status",
+      "kind": "app.status",
+      "title": "主动接活",
+      "handler": "intake.status",
+      "icon": "bell",
+      "refreshSeconds": 60,
+      "order": 40
+    },
+    {
+      "id": "intake-poll-now",
+      "kind": "app.command",
+      "title": "主动接活：立即检查 GitHub 通知",
+      "handler": "intake.pollNow",
+      "icon": "refresh-cw",
+      "order": 41
+    },
+    {
+      "id": "intake-forget-token",
+      "kind": "app.command",
+      "title": "主动接活：删除保存的 GitHub token",
+      "handler": "intake.forgetToken",
+      "icon": "key",
+      "order": 42
+    }
+  ],
+  "interface": {
+    "icon": "assets/icon.svg"
+  }
+}
